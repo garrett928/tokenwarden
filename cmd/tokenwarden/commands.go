@@ -111,9 +111,13 @@ func cmdQueueList(args []string) error {
 	}
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tKIND\tSTATUS\tPRIORITY\tPROMPT")
+	if _, err := fmt.Fprintln(tw, "ID\tKIND\tSTATUS\tPRIORITY\tPROMPT"); err != nil {
+		return err
+	}
 	for _, j := range jobs {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", j.ID, j.Kind, j.Status, j.Priority, truncate(j.Prompt, 60))
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", j.ID, j.Kind, j.Status, j.Priority, truncate(j.Prompt, 60)); err != nil {
+			return err
+		}
 	}
 	return tw.Flush()
 }

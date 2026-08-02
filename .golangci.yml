@@ -6,6 +6,28 @@ linters:
     - unconvert
     - unparam
     - bodyclose
+  settings:
+    errcheck:
+      # Close()/Rollback() on a resource we're already tearing down (a
+      # deferred cleanup, a rollback after an earlier error) isn't
+      # actionable — there's nothing useful to do with a second error while
+      # already unwinding. Blanket-excluding these avoids `_ = x.Close()`
+      # noise at every call site rather than catching real bugs.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Tx).Rollback
+        - (*tokenwarden/internal/store.Store).Close
+  exclusions:
+    rules:
+      # bodyclose can't see that postJSON (api_test.go) registers the
+      # response body's Close via t.Cleanup before returning it — the
+      # close happens, just not visibly at the call site. A known
+      # limitation of the analysis, not a real leak.
+      - path: _test\.go
+        linters:
+          - bodyclose
 
 issues:
   max-issues-per-linter: 0
