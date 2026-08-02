@@ -1,0 +1,38 @@
+# Build output
+/bin/
+/dist/
+/build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+*.test
+*.out
+/vendor/
+
+# UI
+node_modules/
+/ui/dist/
+/ui/.vite/
+
+# Wails
+/desktop/build/bin/
+
+# Local state / databases
+*.db
+*.db-shm
+*.db-wal
+/local/
+
+# Editors & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets — nothing here should ever exist, but belt and braces
+.env
+.env.*
+!.env.example
