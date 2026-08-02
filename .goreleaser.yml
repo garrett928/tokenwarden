@@ -1,0 +1,56 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: tokenwardend
+    main: ./cmd/tokenwardend
+    binary: tokenwardend
+    env:
+      - CGO_ENABLED=0 # load-bearing: see NFR-BUILD-1 in docs/REQUIREMENTS.md
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64 # matches NFR-PLAT-1's five target triples
+
+  - id: tokenwarden
+    main: ./cmd/tokenwarden
+    binary: tokenwarden
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      tokenwarden_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+release:
+  # The desktop shell (Wails, Phase 6) isn't built yet, so these releases
+  # ship the daemon and CLI only — no packaged app bundle. Say so in the
+  # release notes rather than let a downloader assume a GUI is in the box.
+  header: |
+    Pre-alpha: daemon (`tokenwardend`) and CLI client (`tokenwarden`) only.
+    No scheduler loop or desktop UI yet — see docs/REQUIREMENTS.md for the
+    full roadmap.

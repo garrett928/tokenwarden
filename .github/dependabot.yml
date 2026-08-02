@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    # Keeps go.mod's pinned toolchain patch (currently 1.25.12) current —
+    # this exact staleness is what let govulncheck catch real stdlib CVEs
+    # during Phase 2's first CI run. See CLAUDE.md.
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Action major-version pins (e.g. golangci-lint-action) drift out from
+    # under their tools silently — this is what caused the first CI run's
+    # lint job to fail against a v2-schema config with a v1-era action.
