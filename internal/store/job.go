@@ -1,0 +1,101 @@
+package store
+
+import "time"
+
+// JobKind determines the CLI flag profile a job runs under — this is where
+// autonomy posture lives (REQUIREMENTS.md §8.2 / FR-SAFE-3). The runner
+// (Phase 3) maps each kind to a --permission-mode and tool allowlist; the
+// store just persists the choice.
+type JobKind string
+
+const (
+	JobKindResearch JobKind = "research"
+	JobKindPlan     JobKind = "plan"
+	JobKindCode     JobKind = "code"
+	JobKindReview   JobKind = "review"
+	JobKindFreeform JobKind = "freeform"
+)
+
+// ValidJobKinds lists every kind the store will accept on create.
+var ValidJobKinds = []JobKind{JobKindResearch, JobKindPlan, JobKindCode, JobKindReview, JobKindFreeform}
+
+func (k JobKind) valid() bool {
+	for _, v := range ValidJobKinds {
+		if k == v {
+			return true
+		}
+	}
+	return false
+}
+
+// Status is a job's lifecycle state (REQUIREMENTS.md FR-JOB-8).
+type Status string
+
+const (
+	StatusQueued            Status = "queued"
+	StatusBlocked           Status = "blocked" // waiting on DependsOn
+	StatusRunning           Status = "running"
+	StatusPausedBudget      Status = "paused_budget"      // hit --max-budget-usd, awaiting --resume
+	StatusDeferredOversized Status = "deferred_oversized" // couldn't be fit; see REQUIREMENTS.md §6.4
+	StatusSucceeded         Status = "succeeded"
+	StatusFailed            Status = "failed"
+	StatusCancelled         Status = "cancelled"
+)
+
+// Terminal reports whether a job in this status will never transition again
+// on its own. Used by dependency gating: only a Succeeded dependency
+// unblocks a downstream job, but Failed/Cancelled are also terminal for
+// purposes of deciding a blocked job will never become runnable.
+func (s Status) Terminal() bool {
+	switch s {
+	case StatusSucceeded, StatusFailed, StatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Attachment is a file or screenshot copied into a job's workspace and
+// referenced by absolute path in the prompt (FR-JOB-5). tokenwarden does
+// not encode image bytes itself — Claude Code's Read tool handles images
+// and PDFs natively from a path.
+type Attachment struct {
+	Path string `json:"path"`
+	Name string `json:"name,omitempty"`
+}
+
+// Job is a unit of queued work. See REQUIREMENTS.md §5.1 (FR-JOB-1..8) and
+// §6.4 for how Steps and Resumable are used when a job doesn't fit the
+// remaining 5-hour window.
+type Job struct {
+	ID        string
+	Kind      JobKind
+	Prompt    string
+	Workspace string
+	Model     string
+	Effort    string
+
+	Attachments []Attachment
+	Steps       []string // optional user-declared split points, §6.4 strategy 2
+	Resumable   bool     // may be budget-capped and --resume'd later, §6.4 strategy 1
+
+	Priority     int
+	EarliestAt   *time.Time
+	DeadlineAt   *time.Time
+	MaxBudgetUSD *float64
+	DependsOn    []string
+
+	SessionID string // set after first dispatch; enables --resume
+
+	Status        Status
+	FailureReason string
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// ListFilter narrows ListJobs. A zero-value ListFilter returns every job.
+type ListFilter struct {
+	// Statuses restricts results to these statuses. Empty means no filter.
+	Statuses []Status
+}
