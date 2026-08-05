@@ -11,7 +11,8 @@ const jobSelectColumns = `SELECT
 	id, kind, prompt, workspace, model, effort,
 	attachments, steps, resumable, priority,
 	earliest_at, deadline_at, max_budget_usd, depends_on,
-	session_id, status, failure_reason, created_at, updated_at`
+	session_id, status, failure_reason, created_at, updated_at,
+	permission_mode, allowed_tools, add_dirs, json_schema, freeform_worktree`
 
 // rowScanner is satisfied by both *sql.Row and *sql.Rows, letting scanJob
 // serve GetJob (single row) and ListJobs/GetJobs (multi-row) alike.
@@ -27,6 +28,7 @@ func scanJob(row rowScanner) (Job, error) {
 		earliestAt, deadlineAt                  sql.NullInt64
 		maxBudgetUSD                            sql.NullFloat64
 		createdAtUnix, updatedAtUnix            int64
+		allowedToolsJSON, addDirsJSON           string
 	)
 
 	if err := row.Scan(
@@ -34,6 +36,7 @@ func scanJob(row rowScanner) (Job, error) {
 		&attachmentsJSON, &stepsJSON, &j.Resumable, &j.Priority,
 		&earliestAt, &deadlineAt, &maxBudgetUSD, &dependsJSON,
 		&j.SessionID, &status, &j.FailureReason, &createdAtUnix, &updatedAtUnix,
+		&j.PermissionMode, &allowedToolsJSON, &addDirsJSON, &j.JSONSchema, &j.FreeformWorktree,
 	); err != nil {
 		return Job{}, err
 	}
@@ -51,6 +54,12 @@ func scanJob(row rowScanner) (Job, error) {
 	}
 	if err := json.Unmarshal([]byte(dependsJSON), &j.DependsOn); err != nil {
 		return Job{}, fmt.Errorf("decoding depends_on for job %s: %w", j.ID, err)
+	}
+	if err := json.Unmarshal([]byte(allowedToolsJSON), &j.AllowedTools); err != nil {
+		return Job{}, fmt.Errorf("decoding allowed_tools for job %s: %w", j.ID, err)
+	}
+	if err := json.Unmarshal([]byte(addDirsJSON), &j.AddDirs); err != nil {
+		return Job{}, fmt.Errorf("decoding add_dirs for job %s: %w", j.ID, err)
 	}
 
 	if earliestAt.Valid {

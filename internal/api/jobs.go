@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -70,6 +71,36 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, newJobResponse(j))
 }
 
+// handleDispatchJob runs a job right now. It marks the job Running
+// synchronously — so a caller gets an immediate 404/409 if the job doesn't
+// exist or isn't in a dispatchable state — then returns 202 and runs the
+// job itself in the background, since a dispatch may take far longer than
+// an HTTP request should block for. This is a manual, single-job trigger
+// only: nothing here loops, retries, or picks the job on its own (see
+// internal/dispatch's package comment).
+func (s *Server) handleDispatchJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	job, err := s.queue.MarkRunning(r.Context(), id)
+	if err != nil {
+		writeQueueError(w, err)
+		return
+	}
+	// job.Status reflects the pre-transition state per MarkRunning's
+	// contract; refetch so the response the client sees says Running.
+	job.Status = store.StatusRunning
+
+	go func() {
+		// Detached from the request context: the run must continue after
+		// this handler returns and the request context is cancelled.
+		if err := s.dispatch.RunJob(context.Background(), job); err != nil {
+			log.Printf("api: dispatching job %s: %v", id, err)
+		}
+	}()
+
+	writeJSON(w, http.StatusAccepted, newJobResponse(job))
+}
+
 // writeQueueError maps queue/store sentinel errors to HTTP status codes.
 // Anything unrecognized is logged with detail server-side and reported to
 // the client as a bare 500 — internal error messages (a SQL fragment, a
@@ -83,6 +114,8 @@ func writeQueueError(w http.ResponseWriter, err error) {
 	case errors.Is(err, queue.ErrDependencyNotFound):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, queue.ErrAlreadyTerminal):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, queue.ErrNotRunnable):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		log.Printf("api: unexpected error: %v", err)

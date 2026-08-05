@@ -33,23 +33,36 @@ type CreateJobRequest struct {
 	DeadlineAt   *time.Time   `json:"deadline_at,omitempty"`
 	MaxBudgetUSD *float64     `json:"max_budget_usd,omitempty"`
 	DependsOn    []string     `json:"depends_on,omitempty"`
+
+	// PermissionMode, AllowedTools, AddDirs, and FreeformWorktree only take
+	// effect on a freeform job — see store.Job and internal/runner/safety.go.
+	PermissionMode   string   `json:"permission_mode,omitempty"`
+	AllowedTools     []string `json:"allowed_tools,omitempty"`
+	AddDirs          []string `json:"add_dirs,omitempty"`
+	FreeformWorktree bool     `json:"freeform_worktree,omitempty"`
+	JSONSchema       string   `json:"json_schema,omitempty"`
 }
 
 func (r CreateJobRequest) toJob() store.Job {
 	return store.Job{
-		Kind:         store.JobKind(r.Kind),
-		Prompt:       r.Prompt,
-		Workspace:    r.Workspace,
-		Model:        r.Model,
-		Effort:       r.Effort,
-		Attachments:  toStoreAttachments(r.Attachments),
-		Steps:        r.Steps,
-		Resumable:    r.Resumable,
-		Priority:     r.Priority,
-		EarliestAt:   r.EarliestAt,
-		DeadlineAt:   r.DeadlineAt,
-		MaxBudgetUSD: r.MaxBudgetUSD,
-		DependsOn:    r.DependsOn,
+		Kind:             store.JobKind(r.Kind),
+		Prompt:           r.Prompt,
+		Workspace:        r.Workspace,
+		Model:            r.Model,
+		Effort:           r.Effort,
+		Attachments:      toStoreAttachments(r.Attachments),
+		Steps:            r.Steps,
+		Resumable:        r.Resumable,
+		Priority:         r.Priority,
+		EarliestAt:       r.EarliestAt,
+		DeadlineAt:       r.DeadlineAt,
+		MaxBudgetUSD:     r.MaxBudgetUSD,
+		DependsOn:        r.DependsOn,
+		PermissionMode:   r.PermissionMode,
+		AllowedTools:     r.AllowedTools,
+		AddDirs:          r.AddDirs,
+		FreeformWorktree: r.FreeformWorktree,
+		JSONSchema:       r.JSONSchema,
 	}
 }
 
@@ -72,6 +85,12 @@ type JobResponse struct {
 	MaxBudgetUSD *float64   `json:"max_budget_usd,omitempty"`
 	DependsOn    []string   `json:"depends_on"`
 
+	PermissionMode   string   `json:"permission_mode,omitempty"`
+	AllowedTools     []string `json:"allowed_tools,omitempty"`
+	AddDirs          []string `json:"add_dirs,omitempty"`
+	FreeformWorktree bool     `json:"freeform_worktree,omitempty"`
+	JSONSchema       string   `json:"json_schema,omitempty"`
+
 	SessionID string `json:"session_id,omitempty"`
 
 	Status        string `json:"status"`
@@ -83,25 +102,30 @@ type JobResponse struct {
 
 func newJobResponse(j store.Job) JobResponse {
 	return JobResponse{
-		ID:            j.ID,
-		Kind:          string(j.Kind),
-		Prompt:        j.Prompt,
-		Workspace:     j.Workspace,
-		Model:         j.Model,
-		Effort:        j.Effort,
-		Attachments:   toDTOAttachments(j.Attachments),
-		Steps:         j.Steps,
-		Resumable:     j.Resumable,
-		Priority:      j.Priority,
-		EarliestAt:    j.EarliestAt,
-		DeadlineAt:    j.DeadlineAt,
-		MaxBudgetUSD:  j.MaxBudgetUSD,
-		DependsOn:     j.DependsOn,
-		SessionID:     j.SessionID,
-		Status:        string(j.Status),
-		FailureReason: j.FailureReason,
-		CreatedAt:     j.CreatedAt,
-		UpdatedAt:     j.UpdatedAt,
+		ID:               j.ID,
+		Kind:             string(j.Kind),
+		Prompt:           j.Prompt,
+		Workspace:        j.Workspace,
+		Model:            j.Model,
+		Effort:           j.Effort,
+		Attachments:      toDTOAttachments(j.Attachments),
+		Steps:            j.Steps,
+		Resumable:        j.Resumable,
+		Priority:         j.Priority,
+		EarliestAt:       j.EarliestAt,
+		DeadlineAt:       j.DeadlineAt,
+		MaxBudgetUSD:     j.MaxBudgetUSD,
+		DependsOn:        j.DependsOn,
+		PermissionMode:   j.PermissionMode,
+		AllowedTools:     j.AllowedTools,
+		AddDirs:          j.AddDirs,
+		FreeformWorktree: j.FreeformWorktree,
+		JSONSchema:       j.JSONSchema,
+		SessionID:        j.SessionID,
+		Status:           string(j.Status),
+		FailureReason:    j.FailureReason,
+		CreatedAt:        j.CreatedAt,
+		UpdatedAt:        j.UpdatedAt,
 	}
 }
 

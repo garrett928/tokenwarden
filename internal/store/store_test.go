@@ -118,19 +118,24 @@ func TestGetJob_RoundTripsAllFields(t *testing.T) {
 	budget := 5.50
 
 	in := Job{
-		Kind:         JobKindCode,
-		Prompt:       "add input validation to the login handler",
-		Workspace:    "/repos/app",
-		Model:        "sonnet",
-		Effort:       "high",
-		Attachments:  []Attachment{{Path: "/tmp/screenshot.png", Name: "screenshot.png"}},
-		Steps:        []string{"add validation", "write tests"},
-		Resumable:    true,
-		Priority:     10,
-		EarliestAt:   &earliest,
-		DeadlineAt:   &deadline,
-		MaxBudgetUSD: &budget,
-		DependsOn:    []string{"job_other"},
+		Kind:             JobKindCode,
+		Prompt:           "add input validation to the login handler",
+		Workspace:        "/repos/app",
+		Model:            "sonnet",
+		Effort:           "high",
+		Attachments:      []Attachment{{Path: "/tmp/screenshot.png", Name: "screenshot.png"}},
+		Steps:            []string{"add validation", "write tests"},
+		Resumable:        true,
+		Priority:         10,
+		EarliestAt:       &earliest,
+		DeadlineAt:       &deadline,
+		MaxBudgetUSD:     &budget,
+		DependsOn:        []string{"job_other"},
+		PermissionMode:   "acceptEdits",
+		AllowedTools:     []string{"Read", "Write"},
+		AddDirs:          []string{"/repos/shared"},
+		FreeformWorktree: true,
+		JSONSchema:       `{"type":"object"}`,
 	}
 
 	created, err := s.CreateJob(ctx, in)
@@ -166,6 +171,21 @@ func TestGetJob_RoundTripsAllFields(t *testing.T) {
 	if got.MaxBudgetUSD == nil || *got.MaxBudgetUSD != budget {
 		t.Errorf("MaxBudgetUSD = %v, want %v", got.MaxBudgetUSD, budget)
 	}
+	if got.PermissionMode != in.PermissionMode {
+		t.Errorf("PermissionMode = %q, want %q", got.PermissionMode, in.PermissionMode)
+	}
+	if len(got.AllowedTools) != 2 || got.AllowedTools[0] != "Read" || got.AllowedTools[1] != "Write" {
+		t.Errorf("AllowedTools = %+v, want %+v", got.AllowedTools, in.AllowedTools)
+	}
+	if len(got.AddDirs) != 1 || got.AddDirs[0] != "/repos/shared" {
+		t.Errorf("AddDirs = %+v, want %+v", got.AddDirs, in.AddDirs)
+	}
+	if got.FreeformWorktree != in.FreeformWorktree {
+		t.Errorf("FreeformWorktree = %v, want %v", got.FreeformWorktree, in.FreeformWorktree)
+	}
+	if got.JSONSchema != in.JSONSchema {
+		t.Errorf("JSONSchema = %q, want %q", got.JSONSchema, in.JSONSchema)
+	}
 }
 
 func TestGetJob_NotFound(t *testing.T) {
@@ -199,6 +219,12 @@ func TestGetJob_NilSlicesRoundTripAsEmpty(t *testing.T) {
 	}
 	if got.DependsOn == nil {
 		t.Error("DependsOn is nil, want empty slice")
+	}
+	if got.AllowedTools == nil {
+		t.Error("AllowedTools is nil, want empty slice")
+	}
+	if got.AddDirs == nil {
+		t.Error("AddDirs is nil, want empty slice")
 	}
 }
 

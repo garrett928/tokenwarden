@@ -41,6 +41,8 @@ func (s *Store) CreateJob(ctx context.Context, j Job) (Job, error) {
 	j.Attachments = nonNil(j.Attachments)
 	j.Steps = nonNilStrings(j.Steps)
 	j.DependsOn = nonNilStrings(j.DependsOn)
+	j.AllowedTools = nonNilStrings(j.AllowedTools)
+	j.AddDirs = nonNilStrings(j.AddDirs)
 
 	attachmentsJSON, err := json.Marshal(j.Attachments)
 	if err != nil {
@@ -54,19 +56,29 @@ func (s *Store) CreateJob(ctx context.Context, j Job) (Job, error) {
 	if err != nil {
 		return Job{}, fmt.Errorf("encoding depends_on: %w", err)
 	}
+	allowedToolsJSON, err := json.Marshal(j.AllowedTools)
+	if err != nil {
+		return Job{}, fmt.Errorf("encoding allowed_tools: %w", err)
+	}
+	addDirsJSON, err := json.Marshal(j.AddDirs)
+	if err != nil {
+		return Job{}, fmt.Errorf("encoding add_dirs: %w", err)
+	}
 
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO jobs (
 			id, kind, prompt, workspace, model, effort,
 			attachments, steps, resumable, priority,
 			earliest_at, deadline_at, max_budget_usd, depends_on,
-			session_id, status, failure_reason, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			session_id, status, failure_reason, created_at, updated_at,
+			permission_mode, allowed_tools, add_dirs, json_schema, freeform_worktree
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		j.ID, string(j.Kind), j.Prompt, j.Workspace, j.Model, j.Effort,
 		string(attachmentsJSON), string(stepsJSON), j.Resumable, j.Priority,
 		unixOrNil(j.EarliestAt), unixOrNil(j.DeadlineAt), j.MaxBudgetUSD, string(dependsOnJSON),
 		j.SessionID, string(j.Status), j.FailureReason, j.CreatedAt.Unix(), j.UpdatedAt.Unix(),
+		j.PermissionMode, string(allowedToolsJSON), string(addDirsJSON), j.JSONSchema, j.FreeformWorktree,
 	)
 	if err != nil {
 		return Job{}, fmt.Errorf("inserting job: %w", err)

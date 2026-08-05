@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"tokenwarden/internal/dispatch"
 	"tokenwarden/internal/queue"
+	"tokenwarden/internal/runner"
 	"tokenwarden/internal/store"
 )
 
@@ -19,7 +21,13 @@ func newTestServer(t *testing.T) *httptest.Server {
 	}
 	t.Cleanup(func() { s.Close() })
 
-	srv := httptest.NewServer(NewServer(queue.New(s)))
+	q := queue.New(s)
+	// None of these CRUD-focused tests hit the dispatch endpoint, so this
+	// dispatcher is never actually invoked — internal/api/dispatch_test.go
+	// covers /dispatch against a fake claude binary.
+	d := dispatch.New(q, runner.New("claude"))
+
+	srv := httptest.NewServer(NewServer(q, d))
 	t.Cleanup(srv.Close)
 	return srv
 }

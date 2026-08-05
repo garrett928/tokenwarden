@@ -304,3 +304,133 @@ func TestCancel_AlreadyTerminal_Errors(t *testing.T) {
 		t.Errorf("Cancel() error = %v, want ErrAlreadyTerminal", err)
 	}
 }
+
+func TestMarkRunning_FromQueued(t *testing.T) {
+	q, _ := newTestQueue(t)
+	ctx := context.Background()
+
+	j, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := q.MarkRunning(ctx, j.ID)
+	if err != nil {
+		t.Fatalf("MarkRunning() error: %v", err)
+	}
+	if before.Status != store.StatusQueued {
+		t.Errorf("MarkRunning() returned job with Status = %q, want the pre-transition %q", before.Status, store.StatusQueued)
+	}
+
+	got, err := q.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("Status after MarkRunning = %q, want %q", got.Status, store.StatusRunning)
+	}
+}
+
+func TestMarkRunning_FromPausedBudget(t *testing.T) {
+	q, s := newTestQueue(t)
+	ctx := context.Background()
+
+	j, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, j.ID, store.StatusPausedBudget, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := q.MarkRunning(ctx, j.ID); err != nil {
+		t.Fatalf("MarkRunning() error: %v", err)
+	}
+	got, err := q.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusRunning)
+	}
+}
+
+func TestMarkRunning_NotRunnable(t *testing.T) {
+	q, s := newTestQueue(t)
+	ctx := context.Background()
+
+	j, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, j.ID, store.StatusSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := q.MarkRunning(ctx, j.ID); !errors.Is(err, ErrNotRunnable) {
+		t.Errorf("MarkRunning() error = %v, want ErrNotRunnable", err)
+	}
+	got, err := q.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusSucceeded {
+		t.Errorf("Status changed to %q after a rejected MarkRunning, want unchanged %q", got.Status, store.StatusSucceeded)
+	}
+}
+
+func TestFinish_RecordsStatusAndSessionID(t *testing.T) {
+	q, _ := newTestQueue(t)
+	ctx := context.Background()
+
+	j, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.MarkRunning(ctx, j.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Finish(ctx, j.ID, store.StatusSucceeded, "", "sess-123"); err != nil {
+		t.Fatalf("Finish() error: %v", err)
+	}
+	got, err := q.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusSucceeded {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusSucceeded)
+	}
+	if got.SessionID != "sess-123" {
+		t.Errorf("SessionID = %q, want %q", got.SessionID, "sess-123")
+	}
+}
+
+func TestFinish_FailureReasonWithoutSessionID(t *testing.T) {
+	q, _ := newTestQueue(t)
+	ctx := context.Background()
+
+	j, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.MarkRunning(ctx, j.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Finish(ctx, j.ID, store.StatusFailed, "claude exited without a result", ""); err != nil {
+		t.Fatalf("Finish() error: %v", err)
+	}
+	got, err := q.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusFailed {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusFailed)
+	}
+	if got.FailureReason != "claude exited without a result" {
+		t.Errorf("FailureReason = %q, want the recorded reason", got.FailureReason)
+	}
+	if got.SessionID != "" {
+		t.Errorf("SessionID = %q, want empty when Finish was called with no sessionID", got.SessionID)
+	}
+}

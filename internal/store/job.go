@@ -79,6 +79,20 @@ type Job struct {
 	Steps       []string // optional user-declared split points, §6.4 strategy 2
 	Resumable   bool     // may be budget-capped and --resume'd later, §6.4 strategy 1
 
+	// PermissionMode, AllowedTools, AddDirs, and FreeformWorktree only apply
+	// to JobKindFreeform, whose autonomy posture is "user-specified" rather
+	// than fixed by kind (FR-SAFE-3). The store does no semantic validation
+	// of them — same as everywhere else in this file, the runner (Phase 3)
+	// is what enforces the safety table these feed into.
+	PermissionMode   string
+	AllowedTools     []string
+	AddDirs          []string
+	FreeformWorktree bool
+
+	// JSONSchema is passed as --json-schema for structured results,
+	// primarily useful on JobKindResearch (FR-JOB-2, §4.2).
+	JSONSchema string
+
 	Priority     int
 	EarliestAt   *time.Time
 	DeadlineAt   *time.Time
