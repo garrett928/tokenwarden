@@ -1,8 +1,10 @@
 // Command tokenwardend is the tokenwarden daemon: it owns the job store and
-// serves the HTTP API. Phase 2 scope — no scheduler loop yet, so a job sits
-// wherever internal/queue put it until a future phase's dispatcher picks it
-// up. See CLAUDE.md for the module layout and docs/REQUIREMENTS.md for
-// where this is headed.
+// serves the HTTP API. Phase 3 added internal/runner and internal/dispatch,
+// so a job can now actually run — via POST /api/jobs/{id}/dispatch or
+// `tokenwarden queue dispatch` — but there is still no automatic dispatch
+// loop: nothing here selects a job or dispatches on a timer. That
+// budget-aware pacing is a future phase's job. See CLAUDE.md for the
+// module layout and docs/REQUIREMENTS.md for where this is headed.
 package main
 
 import (
@@ -19,7 +21,9 @@ import (
 
 	"tokenwarden/internal/api"
 	"tokenwarden/internal/config"
+	"tokenwarden/internal/dispatch"
 	"tokenwarden/internal/queue"
+	"tokenwarden/internal/runner"
 	"tokenwarden/internal/store"
 )
 
@@ -48,7 +52,10 @@ func run() error {
 	}
 	defer st.Close()
 
-	handler := api.NewServer(queue.New(st))
+	q := queue.New(st)
+	rnr := runner.New(cfg.ClaudeBinaryPath)
+	disp := dispatch.New(q, rnr)
+	handler := api.NewServer(q, disp)
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: handler,

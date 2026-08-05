@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"unk-session-001"}
+{"type":"telemetry_ping","foo":"bar"}
+not json at all, this line should be skipped
+{"type":"result","subtype":"success","is_error":false,"result":"ok","stop_reason":"end_turn","session_id":"unk-session-001","num_turns":1,"duration_ms":100,"duration_api_ms":150,"total_cost_usd":0.001,"usage":{"input_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":0,"output_tokens":1}}

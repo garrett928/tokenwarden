@@ -19,6 +19,7 @@ Usage:
   tokenwarden queue list [--status <status>[,<status>...]]
   tokenwarden queue show <job-id>
   tokenwarden queue cancel <job-id>
+  tokenwarden queue dispatch <job-id> [--wait]
 
 Global:
   Set TOKENWARDEN_ADDR to point at a non-default daemon address
@@ -55,7 +56,7 @@ func run(args []string) error {
 
 func dispatchQueue(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("queue requires a subcommand: add, list, show, cancel")
+		return fmt.Errorf("queue requires a subcommand: add, list, show, cancel, dispatch")
 	}
 	switch args[0] {
 	case "add":
@@ -66,6 +67,8 @@ func dispatchQueue(args []string) error {
 		return cmdQueueShow(args[1:])
 	case "cancel":
 		return cmdQueueCancel(args[1:])
+	case "dispatch":
+		return cmdQueueDispatch(args[1:])
 	default:
 		return fmt.Errorf("unknown queue subcommand %q", args[0])
 	}

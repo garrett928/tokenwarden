@@ -10,12 +10,13 @@ Budget-aware scheduler for Claude Code work. See [`docs/REQUIREMENTS.md`](docs/R
 - `internal/config` — config file + env loading, shared by both binaries.
 - `internal/store` — SQLite persistence (`modernc.org/sqlite`, no cgo — this is load-bearing, see below). Lowest layer; no business logic.
 - `internal/queue` — job lifecycle rules (dependency gating, priority) on top of `store`.
-- `internal/api` — HTTP handlers on top of `queue`. Thin.
-- `internal/runner` — (Phase 3) spawns `claude -p`, parses `stream-json`.
+- `internal/api` — HTTP handlers on top of `queue` and `dispatch`. Thin.
+- `internal/runner` — spawns `claude -p`, parses `stream-json` into a structured `Result`. Depends only on `store` (for `store.Job`), never on `queue`.
+- `internal/dispatch` — runs one named job now (`DispatchOne`/`RunJob`, on top of `runner` and `queue`). Not a scheduler: nothing here selects a job or repeats on its own — that's a future phase's job.
 - `internal/budget` — (Phase 4) usage ledger, calibration, pacing.
 - `internal/cliclient` — HTTP client shared by `cmd/tokenwarden`.
 
-Dependencies point inward: `api → queue → store`. Nothing in `store` imports `queue` or `api`.
+Dependencies point inward: `api → dispatch → {runner, queue} → store`. Nothing in `store` imports `queue`, `runner`, `dispatch`, or `api`; `runner` never imports `queue`.
 
 ## Hard constraints
 
@@ -36,8 +37,8 @@ task run     # build + run the daemon in foreground with local config
 
 ## Testing
 
-Integration tests for the runner (Phase 3+) use a **fake `claude` binary** under `internal/runner/testdata/fakeclaude` that emits scripted `stream-json`, so the dispatch path is exercised with zero tokens spent and no network. Never write a test that shells out to the real `claude` CLI — it costs money and requires a live login.
+Integration tests for the runner and dispatch layers use a **fake `claude` binary** under `internal/runner/testdata/fakeclaude` that emits scripted `stream-json`, so the dispatch path is exercised with zero tokens spent and no network. Never write a test that shells out to the real `claude` CLI — it costs money and requires a live login.
 
 ## Current phase
 
-Phase 2 (daemon skeleton: config, store, queue, API, CLI client) — see `docs/REQUIREMENTS.md` §"Implementation phases" via the plan history, or just check what packages exist under `internal/`.
+Phase 3 complete (`internal/runner` + `internal/dispatch`: a job can now actually be run, via `POST /api/jobs/{id}/dispatch` or `tokenwarden queue dispatch <id>`, always as an explicit single-job trigger — there is still no automatic/background dispatch loop). Phase 4 (`internal/budget`: usage ledger, calibration, pacing) is next — see `docs/REQUIREMENTS.md` §"Implementation phases" via the plan history, or just check what packages exist under `internal/`.

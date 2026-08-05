@@ -27,6 +27,10 @@ var ErrDependencyNotFound = errors.New("dependency job not found")
 // a terminal status and can't be cancelled.
 var ErrAlreadyTerminal = errors.New("job already in a terminal state")
 
+// ErrNotRunnable is returned by MarkRunning when the job isn't in a status
+// that can transition to Running.
+var ErrNotRunnable = errors.New("job is not in a dispatchable state")
+
 // Queue wraps a *store.Store with job lifecycle rules.
 type Queue struct {
 	store *store.Store
@@ -141,6 +145,40 @@ func (q *Queue) Cancel(ctx context.Context, id string) error {
 		return fmt.Errorf("%w: job %s is already %s", ErrAlreadyTerminal, id, j.Status)
 	}
 	return q.store.UpdateStatus(ctx, id, store.StatusCancelled, "cancelled by user")
+}
+
+// MarkRunning transitions a Queued or PausedBudget job to Running and
+// returns the job as it stood just before the transition (so the caller —
+// internal/dispatch — has SessionID/Resumable/etc. to build a run from).
+// It is the only entry point that puts a job into Running, and it names
+// the job explicitly rather than picking one: nothing here selects, loops,
+// or retries on its own. See internal/dispatch for the "dispatch this one
+// job now" primitive this backs.
+func (q *Queue) MarkRunning(ctx context.Context, id string) (store.Job, error) {
+	j, err := q.store.GetJob(ctx, id)
+	if err != nil {
+		return store.Job{}, err
+	}
+	if j.Status != store.StatusQueued && j.Status != store.StatusPausedBudget {
+		return store.Job{}, fmt.Errorf("%w: job %s is %s", ErrNotRunnable, id, j.Status)
+	}
+	if err := q.store.UpdateStatus(ctx, id, store.StatusRunning, ""); err != nil {
+		return store.Job{}, err
+	}
+	return j, nil
+}
+
+// Finish records the outcome of a dispatch: the job's terminal status
+// (typically Succeeded or Failed), an optional failure reason, and — when
+// non-empty — the session ID the run produced, so a later --resume can
+// continue it even after a failed or budget-capped run.
+func (q *Queue) Finish(ctx context.Context, id string, status store.Status, failureReason, sessionID string) error {
+	if sessionID != "" {
+		if err := q.store.UpdateSessionID(ctx, id, sessionID); err != nil {
+			return err
+		}
+	}
+	return q.store.UpdateStatus(ctx, id, status, failureReason)
 }
 
 // resolveDeps fetches every dependency job and errors naming any ID that

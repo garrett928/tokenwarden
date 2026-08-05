@@ -94,6 +94,18 @@ func (c *Client) CancelJob(ctx context.Context, id string) (api.JobResponse, err
 	return decode[api.JobResponse](body)
 }
 
+// DispatchJob runs a job right now. The daemon marks it Running and
+// returns immediately (202) — the job continues running in the
+// background, so a caller that wants the final outcome should poll
+// GetJob until the status is terminal.
+func (c *Client) DispatchJob(ctx context.Context, id string) (api.JobResponse, error) {
+	body, err := c.do(ctx, http.MethodPost, "/api/jobs/"+id+"/dispatch", nil)
+	if err != nil {
+		return api.JobResponse{}, err
+	}
+	return decode[api.JobResponse](body)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {

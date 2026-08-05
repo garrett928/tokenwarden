@@ -7,6 +7,7 @@ package api
 import (
 	"net/http"
 
+	"tokenwarden/internal/dispatch"
 	"tokenwarden/internal/queue"
 )
 
@@ -14,13 +15,14 @@ import (
 // NewServer and mount however you like — the daemon wraps it directly in
 // http.ListenAndServe; tests use httptest.NewServer.
 type Server struct {
-	queue *queue.Queue
-	mux   *http.ServeMux
+	queue    *queue.Queue
+	dispatch *dispatch.Dispatcher
+	mux      *http.ServeMux
 }
 
-// NewServer builds a Server backed by q.
-func NewServer(q *queue.Queue) *Server {
-	s := &Server{queue: q, mux: http.NewServeMux()}
+// NewServer builds a Server backed by q and d.
+func NewServer(q *queue.Queue, d *dispatch.Dispatcher) *Server {
+	s := &Server{queue: q, dispatch: d, mux: http.NewServeMux()}
 	s.routes()
 	return s
 }
@@ -35,6 +37,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/jobs", s.handleListJobs)
 	s.mux.HandleFunc("GET /api/jobs/{id}", s.handleGetJob)
 	s.mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
+	s.mux.HandleFunc("POST /api/jobs/{id}/dispatch", s.handleDispatchJob)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

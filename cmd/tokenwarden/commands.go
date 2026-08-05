@@ -55,6 +55,11 @@ func cmdQueueAdd(args []string) error {
 	maxBudget := fs.Float64("max-budget-usd", 0, "hard per-job spend ceiling in USD (0 = unset)")
 	dependsOn := fs.String("depends-on", "", "comma-separated job IDs this job waits on")
 	steps := fs.String("steps", "", "comma-separated user-declared split points")
+	permissionMode := fs.String("permission-mode", "", "freeform only: plan, dontAsk, acceptEdits, or default")
+	allowedTools := fs.String("allowed-tools", "", "freeform only: comma-separated tool allowlist")
+	addDirs := fs.String("add-dir", "", "freeform only: comma-separated extra --add-dir paths")
+	freeformWorktree := fs.Bool("freeform-worktree", false, "freeform only: run in an isolated --worktree")
+	jsonSchema := fs.String("json-schema", "", "structured result schema, primarily for research jobs")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -64,15 +69,20 @@ func cmdQueueAdd(args []string) error {
 	}
 
 	req := api.CreateJobRequest{
-		Kind:      *kind,
-		Prompt:    *prompt,
-		Workspace: *workspace,
-		Model:     *model,
-		Effort:    *effort,
-		Priority:  *priority,
-		Resumable: *resumable,
-		DependsOn: splitNonEmpty(*dependsOn),
-		Steps:     splitNonEmpty(*steps),
+		Kind:             *kind,
+		Prompt:           *prompt,
+		Workspace:        *workspace,
+		Model:            *model,
+		Effort:           *effort,
+		Priority:         *priority,
+		Resumable:        *resumable,
+		DependsOn:        splitNonEmpty(*dependsOn),
+		Steps:            splitNonEmpty(*steps),
+		PermissionMode:   *permissionMode,
+		AllowedTools:     splitNonEmpty(*allowedTools),
+		AddDirs:          splitNonEmpty(*addDirs),
+		FreeformWorktree: *freeformWorktree,
+		JSONSchema:       *jsonSchema,
 	}
 	if *maxBudget > 0 {
 		req.MaxBudgetUSD = maxBudget
@@ -164,6 +174,60 @@ func cmdQueueCancel(args []string) error {
 	return nil
 }
 
+func cmdQueueDispatch(args []string) error {
+	fs := flag.NewFlagSet("queue dispatch", flag.ExitOnError)
+	wait := fs.Bool("wait", false, "poll until the job reaches a terminal status before returning")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: tokenwarden queue dispatch <job-id> [--wait]")
+	}
+	id := fs.Arg(0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	job, err := newClient().DispatchJob(ctx, id)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("dispatched %s (status %s)\n", job.ID, job.Status)
+
+	if !*wait {
+		return nil
+	}
+
+	// A client-side poll loop on a request the CLI itself just made — not
+	// server-side automation. The daemon has no background dispatch loop;
+	// this just waits politely on the one job it was told to run.
+	for {
+		time.Sleep(2 * time.Second)
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), requestTimeout)
+		job, err = newClient().GetJob(waitCtx, id)
+		waitCancel()
+		if err != nil {
+			return err
+		}
+		if isTerminalStatus(job.Status) {
+			fmt.Printf("finished %s (status %s)\n", job.ID, job.Status)
+			if job.FailureReason != "" {
+				fmt.Printf("reason: %s\n", job.FailureReason)
+			}
+			return nil
+		}
+	}
+}
+
+func isTerminalStatus(status string) bool {
+	switch status {
+	case "succeeded", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
 func printJob(j api.JobResponse) {
 	fmt.Printf("ID:          %s\n", j.ID)
 	fmt.Printf("Kind:        %s\n", j.Kind)
@@ -177,6 +241,9 @@ func printJob(j api.JobResponse) {
 	}
 	if j.Workspace != "" {
 		fmt.Printf("Workspace:   %s\n", j.Workspace)
+	}
+	if j.PermissionMode != "" {
+		fmt.Printf("Permission:  %s\n", j.PermissionMode)
 	}
 	if len(j.DependsOn) > 0 {
 		fmt.Printf("Depends on:  %s\n", strings.Join(j.DependsOn, ", "))
