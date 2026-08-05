@@ -8,22 +8,26 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"tokenwarden/internal/budget"
 	"tokenwarden/internal/queue"
 	"tokenwarden/internal/runner"
 	"tokenwarden/internal/store"
 )
 
-// Dispatcher runs one named job at a time against a Queue and a Runner.
+// Dispatcher runs one named job at a time against a Queue and a Runner,
+// recording its outcome onto a Ledger.
 type Dispatcher struct {
 	queue  *queue.Queue
 	runner *runner.Runner
+	ledger *budget.Ledger
 }
 
-// New builds a Dispatcher backed by q and r.
-func New(q *queue.Queue, r *runner.Runner) *Dispatcher {
-	return &Dispatcher{queue: q, runner: r}
+// New builds a Dispatcher backed by q, r, and l.
+func New(q *queue.Queue, r *runner.Runner, l *budget.Ledger) *Dispatcher {
+	return &Dispatcher{queue: q, runner: r, ledger: l}
 }
 
 // DispatchOne runs the named job right now: it marks the job Running,
@@ -39,19 +43,35 @@ func (d *Dispatcher) DispatchOne(ctx context.Context, jobID string) error {
 }
 
 // RunJob runs a job that has already been marked Running (see
-// queue.MarkRunning) and records the outcome. Split out from DispatchOne so
-// a caller that needs to return control to its own caller before the run
-// finishes — the API's dispatch handler, which marks the job running
-// synchronously but runs it in a goroutine so the HTTP request doesn't
-// block on a potentially long job — can do the state transition and the
-// run as two separate steps.
+// queue.MarkRunning), appends its usage to the ledger, and records the
+// outcome. Split out from DispatchOne so a caller that needs to return
+// control to its own caller before the run finishes — the API's dispatch
+// handler, which marks the job running synchronously but runs it in a
+// goroutine so the HTTP request doesn't block on a potentially long job —
+// can do the state transition and the run as two separate steps.
 func (d *Dispatcher) RunJob(ctx context.Context, job store.Job) error {
 	result, runErr := d.runner.Run(ctx, job, runner.RunOptions{})
 	if runErr != nil {
+		// No Result was ever produced, so there's nothing for the ledger to
+		// record (REQUIREMENTS.md §6.2 step 8: "append to ledger on
+		// completion" — a run that never completed has no usage to append).
 		return d.queue.Finish(ctx, job.ID, store.StatusFailed, runErr.Error(), "")
 	}
-	if result.IsError {
-		return d.queue.Finish(ctx, job.ID, store.StatusFailed, result.Result, result.SessionID)
+
+	// A ledger-write failure shouldn't leave the job stuck in Running — the
+	// dispatch itself succeeded or failed independently of whether we
+	// managed to record it — but it must not be silently swallowed either.
+	var recordErr error
+	if err := d.ledger.RecordResult(ctx, job.ID, result); err != nil {
+		recordErr = fmt.Errorf("recording usage for job %s: %w", job.ID, err)
 	}
-	return d.queue.Finish(ctx, job.ID, store.StatusSucceeded, "", result.SessionID)
+
+	var finishErr error
+	if result.IsError {
+		finishErr = d.queue.Finish(ctx, job.ID, store.StatusFailed, result.Result, result.SessionID)
+	} else {
+		finishErr = d.queue.Finish(ctx, job.ID, store.StatusSucceeded, "", result.SessionID)
+	}
+
+	return errors.Join(recordErr, finishErr)
 }

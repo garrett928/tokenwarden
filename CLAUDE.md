@@ -12,11 +12,11 @@ Budget-aware scheduler for Claude Code work. See [`docs/REQUIREMENTS.md`](docs/R
 - `internal/queue` — job lifecycle rules (dependency gating, priority) on top of `store`.
 - `internal/api` — HTTP handlers on top of `queue` and `dispatch`. Thin.
 - `internal/runner` — spawns `claude -p`, parses `stream-json` into a structured `Result`. Depends only on `store` (for `store.Job`), never on `queue`.
-- `internal/dispatch` — runs one named job now (`DispatchOne`/`RunJob`, on top of `runner` and `queue`). Not a scheduler: nothing here selects a job or repeats on its own — that's a future phase's job.
-- `internal/budget` — (Phase 4) usage ledger, calibration, pacing.
+- `internal/budget` — the local usage ledger: `RecordResult` persists a dispatch's exact tokens/cost (per model, from `runner.Result`), `FiveHourTotal`/`SevenDayTotal` sum a rolling window. This is tokenwarden's own exact spend, **not** the plan's actual rate-limit window fill — that needs ground truth (a future `twprobe` statusline shim / PTY sentinel, still to come) plus calibration. Depends only on `store` and `runner` (for the `Result` type).
+- `internal/dispatch` — runs one named job now (`DispatchOne`/`RunJob`, on top of `runner`, `queue`, and `budget`) and appends its usage to the ledger on completion. Not a scheduler: nothing here selects a job or repeats on its own — that's a future phase's job.
 - `internal/cliclient` — HTTP client shared by `cmd/tokenwarden`.
 
-Dependencies point inward: `api → dispatch → {runner, queue} → store`. Nothing in `store` imports `queue`, `runner`, `dispatch`, or `api`; `runner` never imports `queue`.
+Dependencies point inward: `api → dispatch → {runner, queue, budget} → store`; `budget → runner` (for the `Result` type only). Nothing in `store` imports `queue`, `runner`, `budget`, `dispatch`, or `api`; `runner` never imports `queue` or `budget`.
 
 ## Hard constraints
 
@@ -41,4 +41,11 @@ Integration tests for the runner and dispatch layers use a **fake `claude` binar
 
 ## Current phase
 
-Phase 3 complete (`internal/runner` + `internal/dispatch`: a job can now actually be run, via `POST /api/jobs/{id}/dispatch` or `tokenwarden queue dispatch <id>`, always as an explicit single-job trigger — there is still no automatic/background dispatch loop). Phase 4 (`internal/budget`: usage ledger, calibration, pacing) is next — see `docs/REQUIREMENTS.md` §"Implementation phases" via the plan history, or just check what packages exist under `internal/`.
+Phase 3 complete (`internal/runner` + `internal/dispatch`: a job can now actually be run, via `POST /api/jobs/{id}/dispatch` or `tokenwarden queue dispatch <id>`, always as an explicit single-job trigger — there is still no automatic/background dispatch loop).
+
+Phase 4 is in progress, one slice at a time (per REQUIREMENTS.md §6.1's three sensor-fusion sources):
+
+- **Done:** the local ledger (`internal/budget`) — exact tokens/cost per dispatch, rolling 5h/7d totals, exposed via `GET /api/usage` and `tokenwarden usage`.
+- **Not started:** ground truth (`twprobe` statusline shim + PTY sentinel — needs a new small binary and a live session to validate), calibration (learns tokens-per-percent from ground-truth deltas), and the dispatch loop / `internal/scheduler` (aggressiveness, reserved blocks, weekly pacing). Several of REQUIREMENTS.md §10's open questions (sentinel cadence, cold-start conservatism) block finishing these until there's real usage data to measure against, not just code.
+
+See `docs/REQUIREMENTS.md` §"Implementation phases" via the plan history, or just check what packages exist under `internal/`.

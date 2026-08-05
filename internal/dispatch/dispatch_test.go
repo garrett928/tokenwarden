@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
+	"tokenwarden/internal/budget"
 	"tokenwarden/internal/queue"
 	"tokenwarden/internal/runner"
 	"tokenwarden/internal/store"
@@ -51,7 +53,8 @@ func newTestDispatcher(t *testing.T) *Dispatcher {
 	t.Cleanup(func() { s.Close() })
 	q := queue.New(s)
 	r := runner.New(fakeClaudeBin)
-	return New(q, r)
+	l := budget.New(s)
+	return New(q, r, l)
 }
 
 func TestDispatchOne_Success(t *testing.T) {
@@ -77,6 +80,17 @@ func TestDispatchOne_Success(t *testing.T) {
 	}
 	if got.SessionID == "" {
 		t.Error("SessionID is empty, want the fixture's session id recorded")
+	}
+
+	totals, err := d.ledger.FiveHourTotal(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("FiveHourTotal() error: %v", err)
+	}
+	if totals.EntryCount == 0 {
+		t.Error("ledger has no entries after a successful dispatch, want the happy_path fixture's usage recorded")
+	}
+	if totals.CostUSD != 0.0230845 {
+		t.Errorf("ledger CostUSD = %v, want the fixture's total_cost_usd 0.0230845", totals.CostUSD)
 	}
 }
 

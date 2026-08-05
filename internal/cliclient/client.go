@@ -106,6 +106,17 @@ func (c *Client) DispatchJob(ctx context.Context, id string) (api.JobResponse, e
 	return decode[api.JobResponse](body)
 }
 
+// Usage returns tokenwarden's own rolling 5-hour/7-day usage totals — see
+// api.UsageResponse for the caveat that this is exact local ledger spend,
+// not the plan's actual rate-limit window fill.
+func (c *Client) Usage(ctx context.Context) (api.UsageResponse, error) {
+	body, err := c.do(ctx, http.MethodGet, "/api/usage", nil)
+	if err != nil {
+		return api.UsageResponse{}, err
+	}
+	return decode[api.UsageResponse](body)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {

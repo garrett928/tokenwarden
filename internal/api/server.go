@@ -7,6 +7,7 @@ package api
 import (
 	"net/http"
 
+	"tokenwarden/internal/budget"
 	"tokenwarden/internal/dispatch"
 	"tokenwarden/internal/queue"
 )
@@ -17,12 +18,13 @@ import (
 type Server struct {
 	queue    *queue.Queue
 	dispatch *dispatch.Dispatcher
+	ledger   *budget.Ledger
 	mux      *http.ServeMux
 }
 
-// NewServer builds a Server backed by q and d.
-func NewServer(q *queue.Queue, d *dispatch.Dispatcher) *Server {
-	s := &Server{queue: q, dispatch: d, mux: http.NewServeMux()}
+// NewServer builds a Server backed by q, d, and l.
+func NewServer(q *queue.Queue, d *dispatch.Dispatcher, l *budget.Ledger) *Server {
+	s := &Server{queue: q, dispatch: d, ledger: l, mux: http.NewServeMux()}
 	s.routes()
 	return s
 }
@@ -38,6 +40,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/jobs/{id}", s.handleGetJob)
 	s.mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
 	s.mux.HandleFunc("POST /api/jobs/{id}/dispatch", s.handleDispatchJob)
+	s.mux.HandleFunc("GET /api/usage", s.handleUsage)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

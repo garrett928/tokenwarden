@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"tokenwarden/internal/api"
+	"tokenwarden/internal/budget"
 	"tokenwarden/internal/config"
 	"tokenwarden/internal/dispatch"
 	"tokenwarden/internal/queue"
@@ -54,8 +55,9 @@ func run() error {
 
 	q := queue.New(st)
 	rnr := runner.New(cfg.ClaudeBinaryPath)
-	disp := dispatch.New(q, rnr)
-	handler := api.NewServer(q, disp)
+	ledger := budget.New(st)
+	disp := dispatch.New(q, rnr, ledger)
+	handler := api.NewServer(q, disp, ledger)
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: handler,

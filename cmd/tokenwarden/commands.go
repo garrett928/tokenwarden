@@ -219,6 +219,36 @@ func cmdQueueDispatch(args []string) error {
 	}
 }
 
+func cmdUsage(args []string) error {
+	fs := flag.NewFlagSet("usage", flag.ExitOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	u, err := newClient().Usage(ctx)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("(exact local ledger spend — not the plan's rate-limit window fill; see docs/REQUIREMENTS.md §6.1)")
+	printWindowUsage("Last 5 hours", u.FiveHour)
+	printWindowUsage("Last 7 days", u.SevenDay)
+	return nil
+}
+
+func printWindowUsage(label string, w api.WindowUsage) {
+	fmt.Printf("%s:\n", label)
+	fmt.Printf("  cost:          $%.4f\n", w.CostUSD)
+	fmt.Printf("  input tokens:  %d\n", w.InputTokens)
+	fmt.Printf("  output tokens: %d\n", w.OutputTokens)
+	fmt.Printf("  cache create:  %d\n", w.CacheCreationInputTokens)
+	fmt.Printf("  cache read:    %d\n", w.CacheReadInputTokens)
+	fmt.Printf("  entries:       %d\n", w.EntryCount)
+}
+
 func isTerminalStatus(status string) bool {
 	switch status {
 	case "succeeded", "failed", "cancelled":

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"tokenwarden/internal/budget"
 	"tokenwarden/internal/dispatch"
 	"tokenwarden/internal/queue"
 	"tokenwarden/internal/runner"
@@ -53,9 +54,10 @@ func newDispatchTestServer(t *testing.T) *httptest.Server {
 	t.Cleanup(func() { s.Close() })
 
 	q := queue.New(s)
-	d := dispatch.New(q, runner.New(fakeClaudeBin))
+	l := budget.New(s)
+	d := dispatch.New(q, runner.New(fakeClaudeBin), l)
 
-	srv := httptest.NewServer(NewServer(q, d))
+	srv := httptest.NewServer(NewServer(q, d, l))
 	t.Cleanup(srv.Close)
 	return srv
 }
