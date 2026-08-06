@@ -41,6 +41,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
 	s.mux.HandleFunc("POST /api/jobs/{id}/dispatch", s.handleDispatchJob)
 	s.mux.HandleFunc("GET /api/usage", s.handleUsage)
+	s.mux.HandleFunc("POST /api/ground-truth", s.handleRecordGroundTruth)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

@@ -10,6 +10,7 @@ tasks:
       - mkdir -p {{.BIN_DIR}}
       - go build -o {{.BIN_DIR}}/tokenwardend ./cmd/tokenwardend
       - go build -o {{.BIN_DIR}}/tokenwarden ./cmd/tokenwarden
+      - go build -o {{.BIN_DIR}}/twprobe ./cmd/twprobe
 
   test:
     desc: Run the full test suite with the race detector

@@ -21,6 +21,7 @@ Usage:
   tokenwarden queue cancel <job-id>
   tokenwarden queue dispatch <job-id> [--wait]
   tokenwarden usage
+  tokenwarden probe install [--claude-settings <path>] [--probe-binary <path>]
 
 Global:
   Set TOKENWARDEN_ADDR to point at a non-default daemon address
@@ -49,6 +50,8 @@ func run(args []string) error {
 		return dispatchQueue(args[1:])
 	case "usage":
 		return cmdUsage(args[1:])
+	case "probe":
+		return dispatchProbe(args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return nil
@@ -74,5 +77,17 @@ func dispatchQueue(args []string) error {
 		return cmdQueueDispatch(args[1:])
 	default:
 		return fmt.Errorf("unknown queue subcommand %q", args[0])
+	}
+}
+
+func dispatchProbe(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("probe requires a subcommand: install")
+	}
+	switch args[0] {
+	case "install":
+		return cmdProbeInstall(args[1:])
+	default:
+		return fmt.Errorf("unknown probe subcommand %q", args[0])
 	}
 }
