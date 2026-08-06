@@ -20,6 +20,7 @@ Usage:
   tokenwarden queue show <job-id>
   tokenwarden queue cancel <job-id>
   tokenwarden queue dispatch <job-id> [--wait]
+  tokenwarden usage
 
 Global:
   Set TOKENWARDEN_ADDR to point at a non-default daemon address
@@ -46,6 +47,8 @@ func run(args []string) error {
 		return cmdStatus(args[1:])
 	case "queue":
 		return dispatchQueue(args[1:])
+	case "usage":
+		return cmdUsage(args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return nil
