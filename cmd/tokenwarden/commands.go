@@ -298,6 +298,9 @@ func printJob(j api.JobResponse) {
 	fmt.Printf("Created:     %s\n", j.CreatedAt.Format(time.RFC3339))
 	fmt.Printf("Updated:     %s\n", j.UpdatedAt.Format(time.RFC3339))
 	fmt.Printf("Prompt:\n  %s\n", j.Prompt)
+	if j.Result != "" {
+		fmt.Printf("Result:\n  %s\n", j.Result)
+	}
 }
 
 func splitNonEmpty(s string) []string {

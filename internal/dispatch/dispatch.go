@@ -55,7 +55,7 @@ func (d *Dispatcher) RunJob(ctx context.Context, job store.Job) error {
 		// No Result was ever produced, so there's nothing for the ledger to
 		// record (REQUIREMENTS.md §6.2 step 8: "append to ledger on
 		// completion" — a run that never completed has no usage to append).
-		return d.queue.Finish(ctx, job.ID, store.StatusFailed, runErr.Error(), "")
+		return d.queue.Finish(ctx, job.ID, queue.FinishOutcome{Status: store.StatusFailed, FailureReason: runErr.Error()})
 	}
 
 	// A ledger-write failure shouldn't leave the job stuck in Running — the
@@ -68,9 +68,9 @@ func (d *Dispatcher) RunJob(ctx context.Context, job store.Job) error {
 
 	var finishErr error
 	if result.IsError {
-		finishErr = d.queue.Finish(ctx, job.ID, store.StatusFailed, result.Result, result.SessionID)
+		finishErr = d.queue.Finish(ctx, job.ID, queue.FinishOutcome{Status: store.StatusFailed, FailureReason: result.Result, SessionID: result.SessionID, Result: result.Result})
 	} else {
-		finishErr = d.queue.Finish(ctx, job.ID, store.StatusSucceeded, "", result.SessionID)
+		finishErr = d.queue.Finish(ctx, job.ID, queue.FinishOutcome{Status: store.StatusSucceeded, SessionID: result.SessionID, Result: result.Result})
 	}
 
 	return errors.Join(recordErr, finishErr)

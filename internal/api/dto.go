@@ -95,6 +95,7 @@ type JobResponse struct {
 
 	Status        string `json:"status"`
 	FailureReason string `json:"failure_reason,omitempty"`
+	Result        string `json:"result,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -124,6 +125,7 @@ func newJobResponse(j store.Job) JobResponse {
 		SessionID:        j.SessionID,
 		Status:           string(j.Status),
 		FailureReason:    j.FailureReason,
+		Result:           j.Result,
 		CreatedAt:        j.CreatedAt,
 		UpdatedAt:        j.UpdatedAt,
 	}

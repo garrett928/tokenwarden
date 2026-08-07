@@ -108,6 +108,9 @@ func TestDispatchJob_Success(t *testing.T) {
 	if final.SessionID == "" {
 		t.Error("SessionID is empty after a successful dispatch")
 	}
+	if final.Result != "pong" {
+		t.Errorf("final.Result = %q, want %q", final.Result, "pong")
+	}
 }
 
 func TestDispatchJob_NotFound(t *testing.T) {

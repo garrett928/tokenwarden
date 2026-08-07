@@ -168,17 +168,33 @@ func (q *Queue) MarkRunning(ctx context.Context, id string) (store.Job, error) {
 	return j, nil
 }
 
+// FinishOutcome is the terminal state DispatchOne/RunJob record after a
+// dispatch. Result is the runner's final text output (see store.Job.Result's
+// doc comment); it's set regardless of whether Status is Succeeded or Failed.
+type FinishOutcome struct {
+	Status        store.Status
+	FailureReason string
+	SessionID     string
+	Result        string
+}
+
 // Finish records the outcome of a dispatch: the job's terminal status
 // (typically Succeeded or Failed), an optional failure reason, and — when
-// non-empty — the session ID the run produced, so a later --resume can
-// continue it even after a failed or budget-capped run.
-func (q *Queue) Finish(ctx context.Context, id string, status store.Status, failureReason, sessionID string) error {
-	if sessionID != "" {
-		if err := q.store.UpdateSessionID(ctx, id, sessionID); err != nil {
+// non-empty — the session ID and result text the run produced, so a later
+// --resume can continue it even after a failed or budget-capped run, and
+// so the job's output is retrievable afterward.
+func (q *Queue) Finish(ctx context.Context, id string, outcome FinishOutcome) error {
+	if outcome.SessionID != "" {
+		if err := q.store.UpdateSessionID(ctx, id, outcome.SessionID); err != nil {
 			return err
 		}
 	}
-	return q.store.UpdateStatus(ctx, id, status, failureReason)
+	if outcome.Result != "" {
+		if err := q.store.UpdateResult(ctx, id, outcome.Result); err != nil {
+			return err
+		}
+	}
+	return q.store.UpdateStatus(ctx, id, outcome.Status, outcome.FailureReason)
 }
 
 // resolveDeps fetches every dependency job and errors naming any ID that

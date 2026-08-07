@@ -103,3 +103,41 @@ func TestRecordUsage_RoundTripsAllFields(t *testing.T) {
 		t.Errorf("round-tripped entry = %+v, want fields matching %+v", e, in)
 	}
 }
+
+func TestRecordUsageIfNew_IdempotentOnSameSourceUUID(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	entry := UsageEntry{JobID: "interactive:sess-1", SourceUUID: "msg-uuid-1", InputTokens: 10, OutputTokens: 5}
+
+	inserted1, err := s.RecordUsageIfNew(ctx, entry)
+	if err != nil {
+		t.Fatalf("first RecordUsageIfNew() error: %v", err)
+	}
+	if !inserted1 {
+		t.Error("first RecordUsageIfNew() inserted = false, want true")
+	}
+
+	inserted2, err := s.RecordUsageIfNew(ctx, entry)
+	if err != nil {
+		t.Fatalf("second RecordUsageIfNew() error: %v", err)
+	}
+	if inserted2 {
+		t.Error("second RecordUsageIfNew() with the same SourceUUID inserted = true, want false (idempotent)")
+	}
+
+	got, err := s.ListUsageSince(ctx, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Errorf("ListUsageSince() returned %d entries, want exactly 1 (no duplicate)", len(got))
+	}
+}
+
+func TestRecordUsageIfNew_RequiresSourceUUID(t *testing.T) {
+	s := openTestStore(t)
+	_, err := s.RecordUsageIfNew(context.Background(), UsageEntry{JobID: "x"})
+	if err == nil {
+		t.Error("RecordUsageIfNew() with empty SourceUUID: want error, got nil")
+	}
+}
