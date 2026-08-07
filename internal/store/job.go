@@ -103,6 +103,10 @@ type Job struct {
 
 	Status        Status
 	FailureReason string
+	// Result is the runner's final text output (runner.Result.Result) —
+	// set on both success and failure, since even a failed run's summary
+	// text is useful diagnostic information. Empty until the job completes.
+	Result string
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

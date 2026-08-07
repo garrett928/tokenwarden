@@ -81,6 +81,9 @@ func TestDispatchOne_Success(t *testing.T) {
 	if got.SessionID == "" {
 		t.Error("SessionID is empty, want the fixture's session id recorded")
 	}
+	if got.Result != "pong" {
+		t.Errorf("Result = %q, want %q (the happy_path fixture's result text)", got.Result, "pong")
+	}
 
 	totals, err := d.ledger.FiveHourTotal(ctx, time.Now())
 	if err != nil {

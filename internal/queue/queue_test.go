@@ -390,7 +390,7 @@ func TestFinish_RecordsStatusAndSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := q.Finish(ctx, j.ID, store.StatusSucceeded, "", "sess-123"); err != nil {
+	if err := q.Finish(ctx, j.ID, FinishOutcome{Status: store.StatusSucceeded, SessionID: "sess-123"}); err != nil {
 		t.Fatalf("Finish() error: %v", err)
 	}
 	got, err := q.Get(ctx, j.ID)
@@ -417,7 +417,7 @@ func TestFinish_FailureReasonWithoutSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := q.Finish(ctx, j.ID, store.StatusFailed, "claude exited without a result", ""); err != nil {
+	if err := q.Finish(ctx, j.ID, FinishOutcome{Status: store.StatusFailed, FailureReason: "claude exited without a result"}); err != nil {
 		t.Fatalf("Finish() error: %v", err)
 	}
 	got, err := q.Get(ctx, j.ID)
@@ -432,5 +432,29 @@ func TestFinish_FailureReasonWithoutSessionID(t *testing.T) {
 	}
 	if got.SessionID != "" {
 		t.Errorf("SessionID = %q, want empty when Finish was called with no sessionID", got.SessionID)
+	}
+}
+
+func TestFinish_RecordsResult(t *testing.T) {
+	q, _ := newTestQueue(t)
+	ctx := context.Background()
+
+	j, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.MarkRunning(ctx, j.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Finish(ctx, j.ID, FinishOutcome{Status: store.StatusSucceeded, Result: "the answer is 42"}); err != nil {
+		t.Fatalf("Finish() error: %v", err)
+	}
+	got, err := q.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result != "the answer is 42" {
+		t.Errorf("Result = %q, want %q", got.Result, "the answer is 42")
 	}
 }

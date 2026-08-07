@@ -130,3 +130,29 @@ func TestWindowTotal_EmptyLedger(t *testing.T) {
 		t.Errorf("FiveHourTotal() on empty ledger = %+v, want zero value", totals)
 	}
 }
+
+func TestRecordHistoricalUsage_Idempotent(t *testing.T) {
+	l := openTestLedger(t)
+	ctx := context.Background()
+	h := HistoricalUsage{JobID: "interactive:sess-1", Model: "claude-sonnet-5", InputTokens: 10, OutputTokens: 5, SourceUUID: "msg-1"}
+
+	inserted1, err := l.RecordHistoricalUsage(ctx, h)
+	if err != nil || !inserted1 {
+		t.Fatalf("first RecordHistoricalUsage() = %v, %v; want true, nil", inserted1, err)
+	}
+	inserted2, err := l.RecordHistoricalUsage(ctx, h)
+	if err != nil || inserted2 {
+		t.Fatalf("second RecordHistoricalUsage() = %v, %v; want false, nil (idempotent)", inserted2, err)
+	}
+
+	totals, err := l.FiveHourTotal(ctx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if totals.EntryCount != 1 {
+		t.Errorf("EntryCount = %d, want 1 (no duplicate)", totals.EntryCount)
+	}
+	if totals.InputTokens != 10 {
+		t.Errorf("InputTokens = %d, want 10", totals.InputTokens)
+	}
+}

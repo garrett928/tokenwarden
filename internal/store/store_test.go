@@ -136,6 +136,7 @@ func TestGetJob_RoundTripsAllFields(t *testing.T) {
 		AddDirs:          []string{"/repos/shared"},
 		FreeformWorktree: true,
 		JSONSchema:       `{"type":"object"}`,
+		Result:           "some diagnostic output",
 	}
 
 	created, err := s.CreateJob(ctx, in)
@@ -185,6 +186,9 @@ func TestGetJob_RoundTripsAllFields(t *testing.T) {
 	}
 	if got.JSONSchema != in.JSONSchema {
 		t.Errorf("JSONSchema = %q, want %q", got.JSONSchema, in.JSONSchema)
+	}
+	if got.Result != in.Result {
+		t.Errorf("Result = %q, want %q", got.Result, in.Result)
 	}
 }
 

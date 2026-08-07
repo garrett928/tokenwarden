@@ -32,6 +32,9 @@ node_modules/
 .DS_Store
 Thumbs.db
 
+# Claude Code tooling scaffolding (e.g. isolated agent worktrees)
+.claude/
+
 # Secrets — nothing here should ever exist, but belt and braces
 .env
 .env.*

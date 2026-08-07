@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"tokenwarden/internal/api"
+	"tokenwarden/internal/backfill"
 	"tokenwarden/internal/budget"
 	"tokenwarden/internal/config"
 	"tokenwarden/internal/dispatch"
@@ -56,6 +57,20 @@ func run() error {
 	q := queue.New(st)
 	rnr := runner.New(cfg.ClaudeBinaryPath)
 	ledger := budget.New(st)
+	go func() {
+		dir, err := backfill.DefaultProjectsDir()
+		if err != nil {
+			log.Printf("backfill: resolving projects dir: %v", err)
+			return
+		}
+		stats, err := backfill.IndexProjects(context.Background(), ledger, dir)
+		if err != nil {
+			log.Printf("backfill: indexing %s: %v", dir, err)
+			return
+		}
+		log.Printf("backfill: scanned %d files, %d lines, inserted %d usage entries (%d skipped/duplicate)",
+			stats.FilesScanned, stats.LinesScanned, stats.EntriesInserted, stats.EntriesSkipped)
+	}()
 	disp := dispatch.New(q, rnr, ledger)
 	handler := api.NewServer(q, disp, ledger)
 	httpServer := &http.Server{

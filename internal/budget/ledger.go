@@ -3,6 +3,7 @@ package budget
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"tokenwarden/internal/runner"
 	"tokenwarden/internal/store"
@@ -19,6 +20,22 @@ type Ledger struct {
 // New wraps a Ledger around s.
 func New(s *store.Store) *Ledger {
 	return &Ledger{store: s}
+}
+
+// HistoricalUsage is one already-occurred usage observation recovered by
+// indexing ~/.claude/projects/**/*.jsonl (FR-USAGE-2), as opposed to a
+// live dispatch's runner.Result. There is no dollar cost available in the
+// transcript format this is parsed from, so CostUSD is always 0 for these
+// entries — a deliberate limitation, not a bug.
+type HistoricalUsage struct {
+	JobID                    string // "interactive:<sessionID>" for non-tokenwarden sessions
+	Model                    string
+	InputTokens              int
+	OutputTokens             int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
+	RecordedAt               time.Time
+	SourceUUID               string // the transcript line's uuid; required, used for idempotent re-indexing
 }
 
 // RecordResult persists one dispatch's usage. When result reports
@@ -57,4 +74,23 @@ func (l *Ledger) RecordResult(ctx context.Context, jobID string, result runner.R
 		}
 	}
 	return nil
+}
+
+// RecordHistoricalUsage persists h, skipping silently (inserted=false) if
+// this exact transcript line (by SourceUUID) was already indexed.
+func (l *Ledger) RecordHistoricalUsage(ctx context.Context, h HistoricalUsage) (inserted bool, err error) {
+	inserted, err = l.store.RecordUsageIfNew(ctx, store.UsageEntry{
+		JobID:                    h.JobID,
+		Model:                    h.Model,
+		InputTokens:              h.InputTokens,
+		OutputTokens:             h.OutputTokens,
+		CacheCreationInputTokens: h.CacheCreationInputTokens,
+		CacheReadInputTokens:     h.CacheReadInputTokens,
+		RecordedAt:               h.RecordedAt,
+		SourceUUID:               h.SourceUUID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("recording historical usage (source %s): %w", h.SourceUUID, err)
+	}
+	return inserted, nil
 }

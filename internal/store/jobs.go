@@ -70,14 +70,14 @@ func (s *Store) CreateJob(ctx context.Context, j Job) (Job, error) {
 			id, kind, prompt, workspace, model, effort,
 			attachments, steps, resumable, priority,
 			earliest_at, deadline_at, max_budget_usd, depends_on,
-			session_id, status, failure_reason, created_at, updated_at,
+			session_id, status, failure_reason, result_text, created_at, updated_at,
 			permission_mode, allowed_tools, add_dirs, json_schema, freeform_worktree
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		j.ID, string(j.Kind), j.Prompt, j.Workspace, j.Model, j.Effort,
 		string(attachmentsJSON), string(stepsJSON), j.Resumable, j.Priority,
 		unixOrNil(j.EarliestAt), unixOrNil(j.DeadlineAt), j.MaxBudgetUSD, string(dependsOnJSON),
-		j.SessionID, string(j.Status), j.FailureReason, j.CreatedAt.Unix(), j.UpdatedAt.Unix(),
+		j.SessionID, string(j.Status), j.FailureReason, j.Result, j.CreatedAt.Unix(), j.UpdatedAt.Unix(),
 		j.PermissionMode, string(allowedToolsJSON), string(addDirsJSON), j.JSONSchema, j.FreeformWorktree,
 	)
 	if err != nil {
@@ -171,6 +171,18 @@ func (s *Store) UpdateSessionID(ctx context.Context, id, sessionID string) error
 	`, sessionID, time.Now().UTC().Unix(), id)
 	if err != nil {
 		return fmt.Errorf("updating session id for job %s: %w", id, err)
+	}
+	return checkRowsAffected(res, id)
+}
+
+// UpdateResult records the runner's final text output for a job — see
+// Job.Result's doc comment for why this is set on both success and failure.
+func (s *Store) UpdateResult(ctx context.Context, id, resultText string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE jobs SET result_text = ?, updated_at = ? WHERE id = ?
+	`, resultText, time.Now().UTC().Unix(), id)
+	if err != nil {
+		return fmt.Errorf("updating result for job %s: %w", id, err)
 	}
 	return checkRowsAffected(res, id)
 }
