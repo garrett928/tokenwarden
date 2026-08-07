@@ -83,3 +83,41 @@ func (s *Store) LatestGroundTruth(ctx context.Context) (GroundTruthReading, erro
 	r.ObservedAt = time.Unix(observedAtUnix, 0).UTC()
 	return r, nil
 }
+
+// ListGroundTruth returns every ground truth reading ever recorded,
+// ordered oldest first. Used by calibration to pair consecutive readings.
+func (s *Store) ListGroundTruth(ctx context.Context) ([]GroundTruthReading, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, five_hour_used_percentage, five_hour_resets_at,
+			seven_day_used_percentage, seven_day_resets_at, observed_at
+		FROM ground_truth_readings
+		ORDER BY observed_at ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("listing ground truth readings: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var readings []GroundTruthReading
+	for rows.Next() {
+		var (
+			r                                      GroundTruthReading
+			fiveHourResetsUnix, sevenDayResetsUnix int64
+			observedAtUnix                         int64
+		)
+		if err := rows.Scan(
+			&r.ID, &r.FiveHourUsedPercentage, &fiveHourResetsUnix,
+			&r.SevenDayUsedPercentage, &sevenDayResetsUnix, &observedAtUnix,
+		); err != nil {
+			return nil, fmt.Errorf("scanning ground truth reading: %w", err)
+		}
+		r.FiveHourResetsAt = time.Unix(fiveHourResetsUnix, 0).UTC()
+		r.SevenDayResetsAt = time.Unix(sevenDayResetsUnix, 0).UTC()
+		r.ObservedAt = time.Unix(observedAtUnix, 0).UTC()
+		readings = append(readings, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating ground truth readings: %w", err)
+	}
+	return readings, nil
+}

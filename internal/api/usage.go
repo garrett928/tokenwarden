@@ -33,13 +33,31 @@ func newWindowUsage(t budget.WindowTotals) WindowUsage {
 	}
 }
 
+// CalibrationResponse is the wire representation of a
+// budget.CalibrationEstimate.
+type CalibrationResponse struct {
+	TokensPerPercent float64 `json:"tokens_per_percent"`
+	Samples          int     `json:"samples"`
+	Insufficient     bool    `json:"insufficient"`
+}
+
+func newCalibrationResponse(c budget.CalibrationEstimate) CalibrationResponse {
+	return CalibrationResponse{
+		TokensPerPercent: c.TokensPerPercent,
+		Samples:          c.Samples,
+		Insufficient:     c.Insufficient,
+	}
+}
+
 // UsageResponse is the body of GET /api/usage.
 type UsageResponse struct {
 	FiveHour WindowUsage `json:"five_hour"`
 	SevenDay WindowUsage `json:"seven_day"`
 	// GroundTruth is nil until the twprobe shim has recorded at least one
 	// reading — that's an expected startup state, not an error.
-	GroundTruth *GroundTruthResponse `json:"ground_truth,omitempty"`
+	GroundTruth         *GroundTruthResponse `json:"ground_truth,omitempty"`
+	FiveHourCalibration CalibrationResponse  `json:"five_hour_calibration"`
+	SevenDayCalibration CalibrationResponse  `json:"seven_day_calibration"`
 }
 
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
@@ -63,10 +81,24 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "computing usage failed")
 		return
 	}
+	fiveHourCal, err := s.ledger.CalibrateFiveHour(r.Context())
+	if err != nil {
+		log.Printf("api: computing five-hour calibration: %v", err)
+		writeError(w, http.StatusInternalServerError, "computing usage failed")
+		return
+	}
+	sevenDayCal, err := s.ledger.CalibrateSevenDay(r.Context())
+	if err != nil {
+		log.Printf("api: computing seven-day calibration: %v", err)
+		writeError(w, http.StatusInternalServerError, "computing usage failed")
+		return
+	}
 
 	resp := UsageResponse{
-		FiveHour: newWindowUsage(fiveHour),
-		SevenDay: newWindowUsage(sevenDay),
+		FiveHour:            newWindowUsage(fiveHour),
+		SevenDay:            newWindowUsage(sevenDay),
+		FiveHourCalibration: newCalibrationResponse(fiveHourCal),
+		SevenDayCalibration: newCalibrationResponse(sevenDayCal),
 	}
 	if ok {
 		gt := newGroundTruthResponse(groundTruth, now)
