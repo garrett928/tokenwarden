@@ -7,6 +7,7 @@ To me, this is a great use case of "vibe" coding a highly specific, customized s
 want to put lots of human effort into to learn, understand, and maintain a good project. but this is not one of them. This project simply aims to help me use the tokens I've already paid for
 to help research things for me or work on other quality of life projects that would be nice to have but don't warrant enough effort to develop myself.
 
+## Overview
 
 **Stop wasting the Claude subscription capacity you already paid for.**
 
