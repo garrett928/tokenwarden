@@ -236,7 +236,18 @@ func cmdUsage(args []string) error {
 	fmt.Println("(exact local ledger spend — not the plan's rate-limit window fill; see docs/REQUIREMENTS.md §6.1)")
 	printWindowUsage("Last 5 hours", u.FiveHour)
 	printWindowUsage("Last 7 days", u.SevenDay)
+	printGroundTruth(u.GroundTruth)
 	return nil
+}
+
+func printGroundTruth(gt *api.GroundTruthResponse) {
+	if gt == nil {
+		fmt.Println("Ground truth: none yet — install the statusline probe with 'tokenwarden probe install' and use Claude Code interactively at least once")
+		return
+	}
+	fmt.Printf("Ground truth (authoritative, as of %s, %ds ago):\n", gt.ObservedAt.Format(time.RFC3339), gt.AgeSeconds)
+	fmt.Printf("  5h window:  %d%% used, resets %s\n", gt.FiveHour.UsedPercentage, time.Unix(gt.FiveHour.ResetsAt, 0).Format(time.RFC3339))
+	fmt.Printf("  7d window:  %d%% used, resets %s\n", gt.SevenDay.UsedPercentage, time.Unix(gt.SevenDay.ResetsAt, 0).Format(time.RFC3339))
 }
 
 func printWindowUsage(label string, w api.WindowUsage) {
