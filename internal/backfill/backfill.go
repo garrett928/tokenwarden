@@ -112,7 +112,7 @@ func indexFile(ctx context.Context, ledger *budget.Ledger, path string) (Stats, 
 	if err != nil {
 		return stats, fmt.Errorf("opening %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
