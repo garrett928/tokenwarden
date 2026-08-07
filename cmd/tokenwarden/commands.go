@@ -237,6 +237,8 @@ func cmdUsage(args []string) error {
 	printWindowUsage("Last 5 hours", u.FiveHour)
 	printWindowUsage("Last 7 days", u.SevenDay)
 	printGroundTruth(u.GroundTruth)
+	printCalibration("5h", u.FiveHourCalibration)
+	printCalibration("7d", u.SevenDayCalibration)
 	return nil
 }
 
@@ -248,6 +250,14 @@ func printGroundTruth(gt *api.GroundTruthResponse) {
 	fmt.Printf("Ground truth (authoritative, as of %s, %ds ago):\n", gt.ObservedAt.Format(time.RFC3339), gt.AgeSeconds)
 	fmt.Printf("  5h window:  %d%% used, resets %s\n", gt.FiveHour.UsedPercentage, time.Unix(gt.FiveHour.ResetsAt, 0).Format(time.RFC3339))
 	fmt.Printf("  7d window:  %d%% used, resets %s\n", gt.SevenDay.UsedPercentage, time.Unix(gt.SevenDay.ResetsAt, 0).Format(time.RFC3339))
+}
+
+func printCalibration(label string, c api.CalibrationResponse) {
+	if c.Insufficient {
+		fmt.Printf("Calibration (%s): insufficient data yet (%d sample pair(s), need at least 3)\n", label, c.Samples)
+		return
+	}
+	fmt.Printf("Calibration (%s): ~%.0f tokens per 1%% (from %d sample pairs)\n", label, c.TokensPerPercent, c.Samples)
 }
 
 func printWindowUsage(label string, w api.WindowUsage) {

@@ -19,6 +19,12 @@ func TestUsage_EmptyLedger(t *testing.T) {
 	if got.FiveHour.EntryCount != 0 || got.SevenDay.EntryCount != 0 {
 		t.Errorf("usage on an empty ledger = %+v, want zero entries", got)
 	}
+	if !got.FiveHourCalibration.Insufficient {
+		t.Errorf("FiveHourCalibration.Insufficient = false on an empty ledger, want true")
+	}
+	if !got.SevenDayCalibration.Insufficient {
+		t.Errorf("SevenDayCalibration.Insufficient = false on an empty ledger, want true")
+	}
 }
 
 func TestUsage_AfterDispatch(t *testing.T) {
