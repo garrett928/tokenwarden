@@ -1,5 +1,13 @@
 # tokenwarden
 
+## Note to readers
+
+This repo is intentionally AI driven. For me, solving the problem below does not warrant enough effort from me to develop this application with lots of human guidance.
+To me, this is a great use case of "vibe" coding a highly specific, customized software solution to meet my specific needs. There are software projects that I do
+want to put lots of human effort into to learn, understand, and maintain a good project. but this is not one of them. This project simply aims to help me use the tokens I've already paid for
+to help research things for me or work on other quality of life projects that would be nice to have but don't warrant enough effort to develop myself.
+
+
 **Stop wasting the Claude subscription capacity you already paid for.**
 
 A Claude Pro/Max subscription is metered by two rolling windows — a 5-hour session window and a 7-day weekly window. Unused capacity in either **does not roll over**. It refills while you sleep, and expires unused not because there is no work to do, but because nobody was at the keyboard to dispatch it.
