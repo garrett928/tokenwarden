@@ -242,6 +242,54 @@ func cmdUsage(args []string) error {
 	return nil
 }
 
+func cmdKillSwitchHalt(args []string) error {
+	fs := flag.NewFlagSet("kill-switch halt", flag.ExitOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	resp, err := newClient().HaltDispatch(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Kill switch: halted = %v\n", resp.Halted)
+	return nil
+}
+
+func cmdKillSwitchResume(args []string) error {
+	fs := flag.NewFlagSet("kill-switch resume", flag.ExitOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	resp, err := newClient().ResumeDispatch(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Kill switch: halted = %v\n", resp.Halted)
+	return nil
+}
+
+func cmdKillSwitchStatus(args []string) error {
+	fs := flag.NewFlagSet("kill-switch status", flag.ExitOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	resp, err := newClient().KillSwitchStatus(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Kill switch: halted = %v\n", resp.Halted)
+	return nil
+}
+
 func printGroundTruth(gt *api.GroundTruthResponse) {
 	if gt == nil {
 		fmt.Println("Ground truth: none yet — install the statusline probe with 'tokenwarden probe install' and use Claude Code interactively at least once")

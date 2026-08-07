@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"tokenwarden/internal/budget"
 	"tokenwarden/internal/queue"
@@ -17,17 +18,60 @@ import (
 	"tokenwarden/internal/store"
 )
 
+// ErrHalted is returned when a dispatch is attempted while the kill
+// switch (FR-SAFE-4) is active.
+var ErrHalted = errors.New("dispatch: kill switch is active")
+
 // Dispatcher runs one named job at a time against a Queue and a Runner,
-// recording its outcome onto a Ledger.
+// recording its outcome onto a Ledger. It also holds the kill switch
+// (FR-SAFE-4): Halt marks the dispatcher halted and cancels every
+// in-flight run's context, which terminates its claude subprocess (see
+// internal/runner.Runner.Run's use of exec.CommandContext on that same
+// ctx). The halted flag is in-memory only — it does not survive a daemon
+// restart.
 type Dispatcher struct {
 	queue  *queue.Queue
 	runner *runner.Runner
 	ledger *budget.Ledger
+
+	mu      sync.Mutex
+	halted  bool
+	running map[string]context.CancelFunc
 }
 
 // New builds a Dispatcher backed by q, r, and l.
 func New(q *queue.Queue, r *runner.Runner, l *budget.Ledger) *Dispatcher {
-	return &Dispatcher{queue: q, runner: r, ledger: l}
+	return &Dispatcher{queue: q, runner: r, ledger: l, running: make(map[string]context.CancelFunc)}
+}
+
+// Halt activates the kill switch (FR-SAFE-4): every future DispatchOne
+// or RunJob call fails immediately with ErrHalted without starting a
+// subprocess, and every currently in-flight run's context is cancelled,
+// terminating its claude subprocess. Idempotent — calling it again while
+// already halted is a no-op beyond re-cancelling (harmless).
+func (d *Dispatcher) Halt() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.halted = true
+	for _, cancel := range d.running {
+		cancel()
+	}
+}
+
+// Resume deactivates the kill switch so future dispatches are allowed
+// again. It does not restart or retry anything Halt terminated — those
+// jobs were already recorded Failed with ErrHalted's message.
+func (d *Dispatcher) Resume() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.halted = false
+}
+
+// Halted reports whether the kill switch is currently active.
+func (d *Dispatcher) Halted() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.halted
 }
 
 // DispatchOne runs the named job right now: it marks the job Running,
@@ -35,6 +79,9 @@ func New(q *queue.Queue, r *runner.Runner, l *budget.Ledger) *Dispatcher {
 // outcome. Returns whatever error queue.MarkRunning produces (notably
 // queue.ErrNotRunnable) without ever starting the subprocess.
 func (d *Dispatcher) DispatchOne(ctx context.Context, jobID string) error {
+	if d.Halted() {
+		return ErrHalted
+	}
 	job, err := d.queue.MarkRunning(ctx, jobID)
 	if err != nil {
 		return fmt.Errorf("marking job %s running: %w", jobID, err)
@@ -50,7 +97,25 @@ func (d *Dispatcher) DispatchOne(ctx context.Context, jobID string) error {
 // goroutine so the HTTP request doesn't block on a potentially long job —
 // can do the state transition and the run as two separate steps.
 func (d *Dispatcher) RunJob(ctx context.Context, job store.Job) error {
-	result, runErr := d.runner.Run(ctx, job, runner.RunOptions{})
+	runCtx, cancel := context.WithCancel(ctx)
+
+	d.mu.Lock()
+	if d.halted {
+		d.mu.Unlock()
+		cancel()
+		return d.queue.Finish(ctx, job.ID, queue.FinishOutcome{Status: store.StatusFailed, FailureReason: ErrHalted.Error()})
+	}
+	d.running[job.ID] = cancel
+	d.mu.Unlock()
+
+	defer func() {
+		d.mu.Lock()
+		delete(d.running, job.ID)
+		d.mu.Unlock()
+		cancel()
+	}()
+
+	result, runErr := d.runner.Run(runCtx, job, runner.RunOptions{})
 	if runErr != nil {
 		// No Result was ever produced, so there's nothing for the ledger to
 		// record (REQUIREMENTS.md §6.2 step 8: "append to ledger on

@@ -117,6 +117,36 @@ func (c *Client) Usage(ctx context.Context) (api.UsageResponse, error) {
 	return decode[api.UsageResponse](body)
 }
 
+// HaltDispatch activates the kill switch (FR-SAFE-4): every future
+// dispatch fails immediately, and every currently in-flight run is
+// cancelled, terminating its claude subprocess.
+func (c *Client) HaltDispatch(ctx context.Context) (api.KillSwitchResponse, error) {
+	body, err := c.do(ctx, http.MethodPost, "/api/kill-switch/halt", nil)
+	if err != nil {
+		return api.KillSwitchResponse{}, err
+	}
+	return decode[api.KillSwitchResponse](body)
+}
+
+// ResumeDispatch deactivates the kill switch so dispatches are allowed
+// again.
+func (c *Client) ResumeDispatch(ctx context.Context) (api.KillSwitchResponse, error) {
+	body, err := c.do(ctx, http.MethodPost, "/api/kill-switch/resume", nil)
+	if err != nil {
+		return api.KillSwitchResponse{}, err
+	}
+	return decode[api.KillSwitchResponse](body)
+}
+
+// KillSwitchStatus reports whether the kill switch is currently active.
+func (c *Client) KillSwitchStatus(ctx context.Context) (api.KillSwitchResponse, error) {
+	body, err := c.do(ctx, http.MethodGet, "/api/kill-switch", nil)
+	if err != nil {
+		return api.KillSwitchResponse{}, err
+	}
+	return decode[api.KillSwitchResponse](body)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {

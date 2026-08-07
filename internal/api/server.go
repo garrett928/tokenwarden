@@ -40,6 +40,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/jobs/{id}", s.handleGetJob)
 	s.mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
 	s.mux.HandleFunc("POST /api/jobs/{id}/dispatch", s.handleDispatchJob)
+	s.mux.HandleFunc("GET /api/kill-switch", s.handleKillSwitchStatus)
+	s.mux.HandleFunc("POST /api/kill-switch/halt", s.handleHaltDispatch)
+	s.mux.HandleFunc("POST /api/kill-switch/resume", s.handleResumeDispatch)
 	s.mux.HandleFunc("GET /api/usage", s.handleUsage)
 	s.mux.HandleFunc("POST /api/ground-truth", s.handleRecordGroundTruth)
 }

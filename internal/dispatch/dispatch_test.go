@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,5 +170,106 @@ func TestDispatchOne_ErrorResult(t *testing.T) {
 	}
 	if got.Status != store.StatusFailed {
 		t.Errorf("Status = %q, want %q (claude reported is_error)", got.Status, store.StatusFailed)
+	}
+}
+
+func TestHalt_CancelsInFlightRun(t *testing.T) {
+	d := newTestDispatcher(t)
+
+	var canceled bool
+	d.mu.Lock()
+	d.running["job_x"] = func() { canceled = true }
+	d.mu.Unlock()
+
+	d.Halt()
+
+	if !canceled {
+		t.Error("Halt() did not call the registered cancel func for an in-flight run")
+	}
+	if !d.Halted() {
+		t.Error("Halted() = false after Halt()")
+	}
+}
+
+func TestDispatchOne_FailsFastWhenHalted(t *testing.T) {
+	d := newTestDispatcher(t)
+	ctx := context.Background()
+
+	created, err := d.queue.Enqueue(ctx, store.Job{Kind: store.JobKindResearch, Prompt: "say pong"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d.Halt()
+
+	if err := d.DispatchOne(ctx, created.ID); !errors.Is(err, ErrHalted) {
+		t.Errorf("DispatchOne() error = %v, want ErrHalted", err)
+	}
+
+	got, err := d.queue.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusQueued {
+		t.Errorf("Status = %q, want %q (should not have transitioned to Running/Failed)", got.Status, store.StatusQueued)
+	}
+}
+
+func TestRunJob_FailsWhenHalted(t *testing.T) {
+	t.Setenv("FAKECLAUDE_FIXTURE", "happy_path")
+	d := newTestDispatcher(t)
+	ctx := context.Background()
+
+	created, err := d.queue.Enqueue(ctx, store.Job{Kind: store.JobKindResearch, Prompt: "say pong"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := d.queue.MarkRunning(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d.Halt()
+
+	if err := d.RunJob(ctx, job); err != nil {
+		t.Fatalf("RunJob() error: %v, want nil (the failure is recorded onto the job, not returned)", err)
+	}
+
+	got, err := d.queue.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusFailed {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusFailed)
+	}
+	if !strings.Contains(got.FailureReason, "kill switch") {
+		t.Errorf("FailureReason = %q, want it to contain 'kill switch'", got.FailureReason)
+	}
+}
+
+func TestResume_AllowsDispatchAgain(t *testing.T) {
+	t.Setenv("FAKECLAUDE_FIXTURE", "happy_path")
+	d := newTestDispatcher(t)
+	ctx := context.Background()
+
+	created, err := d.queue.Enqueue(ctx, store.Job{Kind: store.JobKindResearch, Prompt: "say pong"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d.Halt()
+	d.Resume()
+
+	if err := d.DispatchOne(ctx, created.ID); err != nil {
+		t.Fatalf("DispatchOne() after Resume() error: %v", err)
+	}
+
+	got, err := d.queue.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusSucceeded {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusSucceeded)
 	}
 }
