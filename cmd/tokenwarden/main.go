@@ -21,6 +21,7 @@ Usage:
   tokenwarden queue cancel <job-id>
   tokenwarden queue dispatch <job-id> [--wait]
   tokenwarden usage
+  tokenwarden kill-switch halt|resume|status
   tokenwarden probe install [--claude-settings <path>] [--probe-binary <path>]
 
 Global:
@@ -50,6 +51,8 @@ func run(args []string) error {
 		return dispatchQueue(args[1:])
 	case "usage":
 		return cmdUsage(args[1:])
+	case "kill-switch":
+		return dispatchKillSwitch(args[1:])
 	case "probe":
 		return dispatchProbe(args[1:])
 	case "help", "-h", "--help":
@@ -77,6 +80,22 @@ func dispatchQueue(args []string) error {
 		return cmdQueueDispatch(args[1:])
 	default:
 		return fmt.Errorf("unknown queue subcommand %q", args[0])
+	}
+}
+
+func dispatchKillSwitch(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("kill-switch requires a subcommand: halt, resume, status")
+	}
+	switch args[0] {
+	case "halt":
+		return cmdKillSwitchHalt(args[1:])
+	case "resume":
+		return cmdKillSwitchResume(args[1:])
+	case "status":
+		return cmdKillSwitchStatus(args[1:])
+	default:
+		return fmt.Errorf("unknown kill-switch subcommand %q", args[0])
 	}
 }
 

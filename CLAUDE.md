@@ -14,7 +14,7 @@ Budget-aware scheduler for Claude Code work. See [`docs/REQUIREMENTS.md`](docs/R
 - `internal/api` — HTTP handlers on top of `queue`, `dispatch`, and `budget`. Thin.
 - `internal/runner` — spawns `claude -p`, parses `stream-json` into a structured `Result`. Depends only on `store` (for `store.Job`), never on `queue`.
 - `internal/budget` — three of REQUIREMENTS.md §6.1's sensor-fusion sources: the local ledger (`RecordResult` persists a dispatch's exact tokens/cost per model from `runner.Result`; `FiveHourTotal`/`SevenDayTotal` sum a rolling window — tokenwarden's own exact spend, **not** the plan's actual window fill), ground truth (`RecordGroundTruth`/`LatestGroundTruth` store what `cmd/twprobe` captures — the only authoritative source of window fill tokenwarden has, when a reading exists), and calibration (`CalibrateFiveHour`/`CalibrateSevenDay` fit tokens-per-percent from ground-truth reading deltas paired with ledger totals, exposed read-only via `GET /api/usage` and `tokenwarden usage` — not yet wired into any dispatch or throttling decision, since the scheduler doesn't exist yet). Depends only on `store` and `runner` (for the `Result` type).
-- `internal/dispatch` — runs one named job now (`DispatchOne`/`RunJob`, on top of `runner`, `queue`, and `budget`) and appends its usage to the ledger on completion. Not a scheduler: nothing here selects a job or repeats on its own — that's a future phase's job.
+- `internal/dispatch` — runs one named job now (`DispatchOne`/`RunJob`, on top of `runner`, `queue`, and `budget`) and appends its usage to the ledger on completion. Not a scheduler: nothing here selects a job or repeats on its own — that's a future phase's job. Also owns the global kill switch (FR-SAFE-4, `Halt`/`Resume`/`Halted`, in-memory only): halting fails every future dispatch fast and cancels every in-flight run's context, which terminates its subprocess.
 - `internal/backfill` — FR-USAGE-2: indexes `~/.claude/projects/**/*.jsonl` (the transcripts Claude Code itself writes for every interactive session) into the ledger via `budget.Ledger.RecordHistoricalUsage`, so usage totals aren't blind to work done outside tokenwarden. Idempotent by transcript-line `uuid` (`store.RecordUsageIfNew`'s `source_uuid` uniqueness), so re-indexing on every daemon start is safe and cheap. No cost data exists in the transcript format, so backfilled entries always carry `CostUSD: 0` — a known limitation, not a bug. Depends only on `budget`.
 - `internal/cliclient` — HTTP client shared by `cmd/tokenwarden`.
 
@@ -44,6 +44,8 @@ Integration tests for the runner and dispatch layers use a **fake `claude` binar
 ## Current phase
 
 Phase 3 complete (`internal/runner` + `internal/dispatch`: a job can now actually be run, via `POST /api/jobs/{id}/dispatch` or `tokenwarden queue dispatch <id>`, always as an explicit single-job trigger — there is still no automatic/background dispatch loop). A completed job's final text output is persisted (`store.Job.Result`, threaded through `queue.Finish`/`dispatch.RunJob`) and surfaced via `GET /api/jobs/{id}`'s `result` field and `tokenwarden queue show`.
+
+FR-SAFE-4's global kill switch is also done: `POST /api/kill-switch/halt`, `POST /api/kill-switch/resume`, `GET /api/kill-switch`, and `tokenwarden kill-switch halt|resume|status` — halting cancels every in-flight dispatch's subprocess and fails future dispatches immediately, in-memory only (a daemon restart clears it).
 
 Phase 4 is in progress, one slice at a time (per REQUIREMENTS.md §6.1's three sensor-fusion sources):
 
