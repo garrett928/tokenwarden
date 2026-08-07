@@ -33,6 +33,7 @@ jobs:
           mkdir -p bin
           go build -o bin/ ./cmd/tokenwardend
           go build -o bin/ ./cmd/tokenwarden
+          go build -o bin/ ./cmd/twprobe
 
   lint:
     runs-on: ubuntu-latest
@@ -87,3 +88,4 @@ jobs:
           mkdir -p bin
           go build -o bin/ ./cmd/tokenwardend
           go build -o bin/ ./cmd/tokenwarden
+          go build -o bin/ ./cmd/twprobe

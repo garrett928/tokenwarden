@@ -10,8 +10,9 @@ import (
 
 // WindowUsage is the wire representation of a budget.WindowTotals. Per
 // internal/budget's doc comment, these are tokenwarden's own exact spend
-// in the window — not the plan's actual rate-limit fill, which needs
-// ground truth this slice doesn't have yet.
+// in the window — not the plan's actual rate-limit fill. See
+// UsageResponse.GroundTruth for the (possibly absent, possibly stale)
+// authoritative reading, when one exists.
 type WindowUsage struct {
 	InputTokens              int     `json:"input_tokens"`
 	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
@@ -36,6 +37,9 @@ func newWindowUsage(t budget.WindowTotals) WindowUsage {
 type UsageResponse struct {
 	FiveHour WindowUsage `json:"five_hour"`
 	SevenDay WindowUsage `json:"seven_day"`
+	// GroundTruth is nil until the twprobe shim has recorded at least one
+	// reading — that's an expected startup state, not an error.
+	GroundTruth *GroundTruthResponse `json:"ground_truth,omitempty"`
 }
 
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
@@ -53,9 +57,20 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "computing usage failed")
 		return
 	}
+	groundTruth, ok, err := s.ledger.LatestGroundTruth(r.Context())
+	if err != nil {
+		log.Printf("api: fetching latest ground truth: %v", err)
+		writeError(w, http.StatusInternalServerError, "computing usage failed")
+		return
+	}
 
-	writeJSON(w, http.StatusOK, UsageResponse{
+	resp := UsageResponse{
 		FiveHour: newWindowUsage(fiveHour),
 		SevenDay: newWindowUsage(sevenDay),
-	})
+	}
+	if ok {
+		gt := newGroundTruthResponse(groundTruth, now)
+		resp.GroundTruth = &gt
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

@@ -7,16 +7,17 @@ Budget-aware scheduler for Claude Code work. See [`docs/REQUIREMENTS.md`](docs/R
 - `module tokenwarden` — no real VCS path yet, renamed trivially with `go mod edit -module` once this has a GitHub home.
 - `cmd/tokenwardend` — the daemon. Owns the store, the scheduler, the HTTP API.
 - `cmd/tokenwarden` — CLI client. Talks to the daemon over HTTP; never touches the store directly.
+- `cmd/twprobe` — the statusline shim (REQUIREMENTS.md §6.1 item 1, passive capture path): installed as Claude Code's `statusLine` command via `tokenwarden probe install`, it reads stdin on every render, POSTs any `rate_limits` it sees to `POST /api/ground-truth` under a tight timeout, and prints a minimal passthrough line. Must never block a Claude Code turn (NFR-PERF-3) — a slow or unreachable daemon just means nothing gets reported that render.
 - `internal/config` — config file + env loading, shared by both binaries.
 - `internal/store` — SQLite persistence (`modernc.org/sqlite`, no cgo — this is load-bearing, see below). Lowest layer; no business logic.
 - `internal/queue` — job lifecycle rules (dependency gating, priority) on top of `store`.
-- `internal/api` — HTTP handlers on top of `queue` and `dispatch`. Thin.
+- `internal/api` — HTTP handlers on top of `queue`, `dispatch`, and `budget`. Thin.
 - `internal/runner` — spawns `claude -p`, parses `stream-json` into a structured `Result`. Depends only on `store` (for `store.Job`), never on `queue`.
-- `internal/budget` — the local usage ledger: `RecordResult` persists a dispatch's exact tokens/cost (per model, from `runner.Result`), `FiveHourTotal`/`SevenDayTotal` sum a rolling window. This is tokenwarden's own exact spend, **not** the plan's actual rate-limit window fill — that needs ground truth (a future `twprobe` statusline shim / PTY sentinel, still to come) plus calibration. Depends only on `store` and `runner` (for the `Result` type).
+- `internal/budget` — two of REQUIREMENTS.md §6.1's three sensor-fusion sources: the local ledger (`RecordResult` persists a dispatch's exact tokens/cost per model from `runner.Result`; `FiveHourTotal`/`SevenDayTotal` sum a rolling window — tokenwarden's own exact spend, **not** the plan's actual window fill) and ground truth (`RecordGroundTruth`/`LatestGroundTruth` store what `cmd/twprobe` captures — the only authoritative source of window fill tokenwarden has, when a reading exists). The two aren't fused into a single estimate yet; that's calibration, still to come. Depends only on `store` and `runner` (for the `Result` type).
 - `internal/dispatch` — runs one named job now (`DispatchOne`/`RunJob`, on top of `runner`, `queue`, and `budget`) and appends its usage to the ledger on completion. Not a scheduler: nothing here selects a job or repeats on its own — that's a future phase's job.
 - `internal/cliclient` — HTTP client shared by `cmd/tokenwarden`.
 
-Dependencies point inward: `api → dispatch → {runner, queue, budget} → store`; `budget → runner` (for the `Result` type only). Nothing in `store` imports `queue`, `runner`, `budget`, `dispatch`, or `api`; `runner` never imports `queue` or `budget`.
+Dependencies point inward: `api → dispatch → {runner, queue, budget} → store`; `budget → runner` (for the `Result` type only); `cmd/twprobe → internal/api` (for wire DTOs only, no store/business-logic dependency). Nothing in `store` imports `queue`, `runner`, `budget`, `dispatch`, or `api`; `runner` never imports `queue` or `budget`.
 
 ## Hard constraints
 
@@ -37,7 +38,7 @@ task run     # build + run the daemon in foreground with local config
 
 ## Testing
 
-Integration tests for the runner and dispatch layers use a **fake `claude` binary** under `internal/runner/testdata/fakeclaude` that emits scripted `stream-json`, so the dispatch path is exercised with zero tokens spent and no network. Never write a test that shells out to the real `claude` CLI — it costs money and requires a live login.
+Integration tests for the runner and dispatch layers use a **fake `claude` binary** under `internal/runner/testdata/fakeclaude` that emits scripted `stream-json`, so the dispatch path is exercised with zero tokens spent and no network. Never write a test that shells out to the real `claude` CLI — it costs money and requires a live login. `cmd/twprobe`'s integration tests build the real `twprobe` binary and run it against an `httptest.Server` standing in for the daemon — no Claude Code session needed, since twprobe only cares about the JSON shape on stdin, which SPIKE-001 already captured and verified.
 
 ## Current phase
 
@@ -46,6 +47,7 @@ Phase 3 complete (`internal/runner` + `internal/dispatch`: a job can now actuall
 Phase 4 is in progress, one slice at a time (per REQUIREMENTS.md §6.1's three sensor-fusion sources):
 
 - **Done:** the local ledger (`internal/budget`) — exact tokens/cost per dispatch, rolling 5h/7d totals, exposed via `GET /api/usage` and `tokenwarden usage`.
-- **Not started:** ground truth (`twprobe` statusline shim + PTY sentinel — needs a new small binary and a live session to validate), calibration (learns tokens-per-percent from ground-truth deltas), and the dispatch loop / `internal/scheduler` (aggressiveness, reserved blocks, weekly pacing). Several of REQUIREMENTS.md §10's open questions (sentinel cadence, cold-start conservatism) block finishing these until there's real usage data to measure against, not just code.
+- **Done:** ground truth, passive capture path only (`cmd/twprobe` + `internal/budget`'s `RecordGroundTruth`/`LatestGroundTruth` + `POST /api/ground-truth`) — install via `tokenwarden probe install`, which merges the shim into `~/.claude/settings.json`'s `statusLine` command. The user's own interactive sessions now feed the daemon real `rate_limits` readings for free, surfaced in `GET /api/usage`'s `ground_truth` field.
+- **Not started:** the active capture path (a periodic PTY sentinel — needs a live session to validate and a cadence/cost tradeoff decision, REQUIREMENTS.md §10 open question 1), calibration (fuses the ledger and ground truth into a dead-reckoned estimate — learns tokens-per-percent from ground-truth deltas), and the dispatch loop / `internal/scheduler` (aggressiveness, reserved blocks, weekly pacing). Several of §10's open questions (sentinel cadence, cold-start conservatism) block finishing these until there's real usage data to measure against, not just code.
 
 See `docs/REQUIREMENTS.md` §"Implementation phases" via the plan history, or just check what packages exist under `internal/`.
