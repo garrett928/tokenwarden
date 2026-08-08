@@ -258,14 +258,16 @@ When the top-priority job's predicted cost exceeds remaining 5-hour headroom, th
 - Cloud-hosted scheduling (Anthropic Routines / GitHub Actions dispatch).
 - Mobile-native clients (the responsive web UI is the mobile story).
 - macOS notarization and Windows code signing — deferred, with unsigned-install instructions documented rather than pretended away.
+- **Sentinel cadence strategy selection.** v1 ships the PTY sentinel on a fixed wall-clock interval only (§10 item 1). Letting the user choose between fixed-time and fixed-job-count cadence (fire every N dispatched jobs instead of every N minutes) is deferred to a later release.
+- **Stretch goal, post-v1: adaptive sentinel cadence.** Vary sentinel frequency by confidence (time since last reading, size of an upcoming dispatch) instead of a fixed interval — the most accurate option, but only worth building once real burn-in data from the fixed-interval version exists to tune it against.
 
 ---
 
 ## 10. Open questions
 
-1. **Sentinel cadence.** How often must the PTY sentinel fire to keep dead-reckoning within a useful band overnight? Requires burn-in measurement (§11); the answer directly trades accuracy against a small token cost.
+1. ~~**Sentinel cadence.**~~ **Resolved:** fixed 30-minute interval for v1. Strategy selection (fixed-time vs. fixed-job-count) and adaptive cadence are deferred — see §9.
 2. **Concurrency.** Do parallel `claude -p` runs give better window utilisation, or do they mainly cause overshoot past the ceiling? Measure before enabling.
-3. **Cost estimation cold start.** Before calibration data exists, job cost estimates come from priors. How conservative should the first week be?
+3. ~~**Cost estimation cold start.**~~ **Resolved:** no prior. Until `internal/budget.CalibrateFiveHour`/`CalibrateSevenDay` report `Insufficient: false` (≥3 samples), the engine dispatches one job at a time and relies solely on the hard ceiling check (§6.2 step 3) rather than a predicted-cost fit.
 4. **Weekly model-specific caps.** Max plans reportedly carry a second weekly limit scoped to certain models. `rate_limits` exposes only `five_hour` and `seven_day`, so a model-specific cap may be invisible to the engine and only discoverable via an error. Needs investigation.
 
 ---
