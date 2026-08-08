@@ -305,6 +305,46 @@ func TestCancel_AlreadyTerminal_Errors(t *testing.T) {
 	}
 }
 
+func TestDeferOversized_FromQueued(t *testing.T) {
+	q, _ := newTestQueue(t)
+	ctx := context.Background()
+
+	j, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.DeferOversized(ctx, j.ID, "exceeds remaining 5h headroom even empty"); err != nil {
+		t.Fatalf("DeferOversized() error: %v", err)
+	}
+	got, err := q.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusDeferredOversized {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusDeferredOversized)
+	}
+	if got.FailureReason == "" {
+		t.Error("FailureReason is empty, want the deferral reason recorded")
+	}
+}
+
+func TestDeferOversized_AlreadyTerminal_Errors(t *testing.T) {
+	q, s := newTestQueue(t)
+	ctx := context.Background()
+
+	j, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, j.ID, store.StatusSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.DeferOversized(ctx, j.ID, "too big"); !errors.Is(err, ErrAlreadyTerminal) {
+		t.Errorf("DeferOversized() error = %v, want ErrAlreadyTerminal", err)
+	}
+}
+
 func TestMarkRunning_FromQueued(t *testing.T) {
 	q, _ := newTestQueue(t)
 	ctx := context.Background()

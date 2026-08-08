@@ -197,6 +197,21 @@ func (q *Queue) Finish(ctx context.Context, id string, outcome FinishOutcome) er
 	return q.store.UpdateStatus(ctx, id, outcome.Status, outcome.FailureReason)
 }
 
+// DeferOversized transitions a non-terminal job to DeferredOversized,
+// recording why it couldn't be fit into remaining headroom (REQUIREMENTS.md
+// §6.4 step 4). Like Cancel, deferring an already-terminal job is an error
+// rather than a silent no-op.
+func (q *Queue) DeferOversized(ctx context.Context, id, reason string) error {
+	j, err := q.store.GetJob(ctx, id)
+	if err != nil {
+		return err
+	}
+	if j.Status.Terminal() {
+		return fmt.Errorf("%w: job %s is already %s", ErrAlreadyTerminal, id, j.Status)
+	}
+	return q.store.UpdateStatus(ctx, id, store.StatusDeferredOversized, reason)
+}
+
 // resolveDeps fetches every dependency job and errors naming any ID that
 // doesn't exist, rather than silently treating a typo'd dependency ID as
 // "not yet satisfied" forever.
