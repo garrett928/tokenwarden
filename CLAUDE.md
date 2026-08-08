@@ -47,12 +47,21 @@ Phase 3 complete (`internal/runner` + `internal/dispatch`: a job can now actuall
 
 FR-SAFE-4's global kill switch is also done: `POST /api/kill-switch/halt`, `POST /api/kill-switch/resume`, `GET /api/kill-switch`, and `tokenwarden kill-switch halt|resume|status` — halting cancels every in-flight dispatch's subprocess and fails future dispatches immediately, in-memory only (a daemon restart clears it).
 
-Phase 4 is in progress, one slice at a time (per REQUIREMENTS.md §6.1's three sensor-fusion sources):
+**Phase 4 is complete** (per REQUIREMENTS.md §6.1's three sensor-fusion sources), plus one extra slice bundled in alongside it:
 
 - **Done:** the local ledger (`internal/budget`) — exact tokens/cost per dispatch, rolling 5h/7d totals, exposed via `GET /api/usage` and `tokenwarden usage`.
 - **Done:** ground truth, passive capture path only (`cmd/twprobe` + `internal/budget`'s `RecordGroundTruth`/`LatestGroundTruth` + `POST /api/ground-truth`) — install via `tokenwarden probe install`, which merges the shim into `~/.claude/settings.json`'s `statusLine` command. The user's own interactive sessions now feed the daemon real `rate_limits` readings for free, surfaced in `GET /api/usage`'s `ground_truth` field.
-- **Done:** FR-USAGE-2 historical backfill (`internal/backfill`) — on daemon startup, a background goroutine indexes `~/.claude/projects/**/*.jsonl` and feeds every interactive session's usage into the same ledger `tokenwarden usage` reads from, idempotently (safe to re-run every startup). Interactive-session entries are tagged `job_id = "interactive:<sessionID>"` and carry `CostUSD: 0` (not present in the transcript format).
 - **Done:** calibration fitting (`internal/budget/calibration.go`) — learns tokens-per-percent from ground-truth reading deltas paired with ledger totals, exposed via `GET /api/usage` and `tokenwarden usage`. Read-only: not yet consulted by any dispatch decision.
-- **Not started:** the active capture path (a periodic PTY sentinel — needs a live session to validate and a cadence/cost tradeoff decision, REQUIREMENTS.md §10 open question 1) and the dispatch loop / `internal/scheduler` (aggressiveness, reserved blocks, weekly pacing). Several of §10's open questions (sentinel cadence, cold-start conservatism) block finishing these until there's real usage data to measure against, not just code.
+- **Done (bonus, not one of the three sensor-fusion sources but shipped in the same phase):** FR-USAGE-2 historical backfill (`internal/backfill`) — on daemon startup, a background goroutine indexes `~/.claude/projects/**/*.jsonl` and feeds every interactive session's usage into the same ledger `tokenwarden usage` reads from, idempotently (safe to re-run every startup). Interactive-session entries are tagged `job_id = "interactive:<sessionID>"` and carry `CostUSD: 0` (not present in the transcript format).
+
+**Phase 5, not started:** the active capture path (a periodic PTY sentinel) and the dispatch loop / `internal/scheduler` (aggressiveness, reserved blocks, weekly pacing) — this is the next work to pick up.
+
+Two of REQUIREMENTS.md §10's open questions that were blocking Phase 5 are now **resolved** (see §10 and §9 for the full text):
+- **Sentinel cadence:** fixed 30-minute interval for v1. Choosing between fixed-time and fixed-job-count cadence is a deferred follow-up; adaptive cadence is a post-v1 stretch goal.
+- **Cost estimation cold start:** no prior. Until `internal/budget`'s calibration reports `Insufficient: false` (≥3 samples), the engine dispatches one job at a time and relies solely on the hard 5h/7d ceiling checks (§6.2 step 3) rather than a predicted-cost fit.
+
+This means **the dispatch loop / `internal/scheduler` is unblocked and ready to build** — it's pure logic, fully testable offline against the fake `claude` binary like everything else in this repo, and needs no further policy decisions to get started (concurrency and weekly model-specific caps, §10 items 2 and 4, remain open but don't block a first version: concurrency is out of scope until measured, and model-specific caps are an investigation item, not something the scheduler's first version needs to handle).
+
+The PTY sentinel is a separate matter and is **not** unblocked by the cadence decision alone: it needs to spawn a real interactive `claude` session inside a pseudo-terminal to force a statusline render (headless `-p` mode never emits `rate_limits` — SPIKE-001's finding), and nothing in this repo has prototyped PTY handling yet (cross-platform behavior, i.e. Unix PTYs vs. Windows ConPTY, is unexplored). Treat it as its own live-validation spike — similar to how SPIKE-001 was done — before writing production code, not as a haiku-subagent-delegable slice like the rest of Phase 4.
 
 See `docs/REQUIREMENTS.md` §"Implementation phases" via the plan history, or just check what packages exist under `internal/`.
