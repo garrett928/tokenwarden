@@ -60,3 +60,26 @@ func TestPrintGroundTruth_PresentShowsBothWindows(t *testing.T) {
 		t.Errorf("output = %q, want the seven-day used percentage (22%%)", out)
 	}
 }
+
+func TestPrintSchedulerConfig(t *testing.T) {
+	budget := 15.5
+	cfg := api.SchedulerConfigResponse{
+		Enabled:        true,
+		Aggressiveness: 65,
+		MaxBudgetUSD:   &budget,
+		ReservedBlocks: []api.TimeBlockDTO{{StartMin: 540, EndMin: 1020}},
+	}
+	out := captureStdout(t, func() { printSchedulerConfig(cfg) })
+	if !strings.Contains(out, "true") {
+		t.Errorf("output = %q, want Enabled=true reflected", out)
+	}
+	if !strings.Contains(out, "65%") {
+		t.Errorf("output = %q, want aggressiveness (65%%)", out)
+	}
+	if !strings.Contains(out, "$15.50") {
+		t.Errorf("output = %q, want the max budget ($15.50)", out)
+	}
+	if !strings.Contains(out, "1 configured") {
+		t.Errorf("output = %q, want the reserved block count", out)
+	}
+}

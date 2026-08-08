@@ -29,7 +29,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	// covers /dispatch against a fake claude binary.
 	d := dispatch.New(q, runner.New("claude"), l)
 
-	srv := httptest.NewServer(NewServer(q, d, l))
+	srv := httptest.NewServer(NewServer(s, q, d, l))
 	t.Cleanup(srv.Close)
 	return srv
 }

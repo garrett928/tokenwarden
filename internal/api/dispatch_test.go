@@ -57,7 +57,7 @@ func newDispatchTestServer(t *testing.T) *httptest.Server {
 	l := budget.New(s)
 	d := dispatch.New(q, runner.New(fakeClaudeBin), l)
 
-	srv := httptest.NewServer(NewServer(q, d, l))
+	srv := httptest.NewServer(NewServer(s, q, d, l))
 	t.Cleanup(srv.Close)
 	return srv
 }

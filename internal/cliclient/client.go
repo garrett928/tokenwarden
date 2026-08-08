@@ -147,6 +147,25 @@ func (c *Client) KillSwitchStatus(ctx context.Context) (api.KillSwitchResponse, 
 	return decode[api.KillSwitchResponse](body)
 }
 
+// GetSchedulerConfig fetches the scheduler's current config
+// (REQUIREMENTS.md §5.2).
+func (c *Client) GetSchedulerConfig(ctx context.Context) (api.SchedulerConfigResponse, error) {
+	body, err := c.do(ctx, http.MethodGet, "/api/scheduler/config", nil)
+	if err != nil {
+		return api.SchedulerConfigResponse{}, err
+	}
+	return decode[api.SchedulerConfigResponse](body)
+}
+
+// UpdateSchedulerConfig replaces the scheduler's whole config.
+func (c *Client) UpdateSchedulerConfig(ctx context.Context, req api.UpdateSchedulerConfigRequest) (api.SchedulerConfigResponse, error) {
+	body, err := c.do(ctx, http.MethodPut, "/api/scheduler/config", req)
+	if err != nil {
+		return api.SchedulerConfigResponse{}, err
+	}
+	return decode[api.SchedulerConfigResponse](body)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {

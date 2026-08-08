@@ -1,9 +1,10 @@
 // Command tokenwardend is the tokenwarden daemon: it owns the job store and
 // serves the HTTP API. Phase 3 added internal/runner and internal/dispatch,
-// so a job can now actually run — via POST /api/jobs/{id}/dispatch or
-// `tokenwarden queue dispatch` — but there is still no automatic dispatch
-// loop: nothing here selects a job or dispatches on a timer. That
-// budget-aware pacing is a future phase's job. See CLAUDE.md for the
+// so a job can run on demand — via POST /api/jobs/{id}/dispatch or
+// `tokenwarden queue dispatch`. Phase 5 adds internal/scheduler's
+// budget-aware dispatch loop on top of that: it always runs, but only
+// ever dispatches once a user opts in via `tokenwarden scheduler config
+// set --enabled` (or PUT /api/scheduler/config) — see CLAUDE.md for the
 // module layout and docs/REQUIREMENTS.md for where this is headed.
 package main
 
@@ -26,6 +27,7 @@ import (
 	"tokenwarden/internal/dispatch"
 	"tokenwarden/internal/queue"
 	"tokenwarden/internal/runner"
+	"tokenwarden/internal/scheduler"
 	"tokenwarden/internal/store"
 )
 
@@ -54,6 +56,9 @@ func run() error {
 	}
 	defer st.Close()
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	q := queue.New(st)
 	rnr := runner.New(cfg.ClaudeBinaryPath)
 	ledger := budget.New(st)
@@ -72,7 +77,15 @@ func run() error {
 			stats.FilesScanned, stats.LinesScanned, stats.EntriesInserted, stats.EntriesSkipped)
 	}()
 	disp := dispatch.New(q, rnr, ledger)
-	handler := api.NewServer(q, disp, ledger)
+
+	// The dispatch loop (Phase 5, REQUIREMENTS.md §6.2) always runs — it's
+	// a no-op every tick until a user enables it via `tokenwarden
+	// scheduler config set --enabled` (or PUT /api/scheduler/config),
+	// since Engine.Tick checks SchedulerConfig.Enabled itself.
+	sched := scheduler.New(st, q, disp, ledger, nil)
+	go sched.Run(ctx)
+
+	handler := api.NewServer(st, q, disp, ledger)
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: handler,
@@ -81,9 +94,6 @@ func run() error {
 		// though this only ever binds to loopback (NFR-SEC-2).
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	serveErr := make(chan error, 1)
 	go func() {

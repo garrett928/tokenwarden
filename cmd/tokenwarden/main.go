@@ -22,6 +22,8 @@ Usage:
   tokenwarden queue dispatch <job-id> [--wait]
   tokenwarden usage
   tokenwarden kill-switch halt|resume|status
+  tokenwarden scheduler config show
+  tokenwarden scheduler config set [--enabled|--disabled] [--aggressiveness <0-100>] [--max-budget-usd <usd>|--clear-max-budget-usd]
   tokenwarden probe install [--claude-settings <path>] [--probe-binary <path>]
 
 Global:
@@ -53,6 +55,8 @@ func run(args []string) error {
 		return cmdUsage(args[1:])
 	case "kill-switch":
 		return dispatchKillSwitch(args[1:])
+	case "scheduler":
+		return dispatchScheduler(args[1:])
 	case "probe":
 		return dispatchProbe(args[1:])
 	case "help", "-h", "--help":
@@ -96,6 +100,24 @@ func dispatchKillSwitch(args []string) error {
 		return cmdKillSwitchStatus(args[1:])
 	default:
 		return fmt.Errorf("unknown kill-switch subcommand %q", args[0])
+	}
+}
+
+func dispatchScheduler(args []string) error {
+	if len(args) == 0 || args[0] != "config" {
+		return fmt.Errorf("scheduler requires a subcommand: config show, config set")
+	}
+	configArgs := args[1:]
+	if len(configArgs) == 0 {
+		return fmt.Errorf("scheduler config requires a subcommand: show, set")
+	}
+	switch configArgs[0] {
+	case "show":
+		return cmdSchedulerConfigShow(configArgs[1:])
+	case "set":
+		return cmdSchedulerConfigSet(configArgs[1:])
+	default:
+		return fmt.Errorf("unknown scheduler config subcommand %q", configArgs[0])
 	}
 }
 
