@@ -2,6 +2,7 @@ package backfill
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,16 +22,24 @@ func openTestLedger(t *testing.T) *budget.Ledger {
 	return budget.New(s)
 }
 
-// A real (trimmed) transcript excerpt: one irrelevant "user" line, one
-// "assistant" line with usage, one duplicate-uuid "assistant" line (to
-// prove idempotency within a single file), and one malformed line (to
-// prove a bad line doesn't abort the scan).
-const testTranscript = `{"type":"user","sessionId":"sess-1","message":{"role":"user","content":"hi"}}
-{"type":"assistant","sessionId":"sess-1","timestamp":"2026-08-07T19:27:19.840Z","uuid":"msg-uuid-1","message":{"model":"claude-sonnet-5","usage":{"input_tokens":2,"cache_creation_input_tokens":9321,"cache_read_input_tokens":40828,"output_tokens":299}}}
-{"type":"assistant","sessionId":"sess-1","timestamp":"2026-08-07T19:27:19.840Z","uuid":"msg-uuid-1","message":{"model":"claude-sonnet-5","usage":{"input_tokens":2,"cache_creation_input_tokens":9321,"cache_read_input_tokens":40828,"output_tokens":299}}}
+// testTranscript is a real (trimmed) transcript excerpt: one irrelevant
+// "user" line, one "assistant" line with usage, one duplicate-uuid
+// "assistant" line (to prove idempotency within a single file), and one
+// malformed line (to prove a bad line doesn't abort the scan).
+// msg-uuid-1's timestamp must stay within the last 5 hours relative to
+// whenever the test actually runs — TestIndexProjects_IndexesAssistantLinesOnly
+// asserts it lands in FiveHourTotal, so it's generated from time.Now()
+// rather than hardcoded (a fixed past timestamp would eventually age out
+// of the window and fail).
+func testTranscript() string {
+	recent := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339Nano)
+	return fmt.Sprintf(`{"type":"user","sessionId":"sess-1","message":{"role":"user","content":"hi"}}
+{"type":"assistant","sessionId":"sess-1","timestamp":"%s","uuid":"msg-uuid-1","message":{"model":"claude-sonnet-5","usage":{"input_tokens":2,"cache_creation_input_tokens":9321,"cache_read_input_tokens":40828,"output_tokens":299}}}
+{"type":"assistant","sessionId":"sess-1","timestamp":"%s","uuid":"msg-uuid-1","message":{"model":"claude-sonnet-5","usage":{"input_tokens":2,"cache_creation_input_tokens":9321,"cache_read_input_tokens":40828,"output_tokens":299}}}
 not valid json at all
 {"type":"assistant","sessionId":"sess-1","uuid":"msg-uuid-2","message":{"model":"claude-sonnet-5","usage":{"input_tokens":5,"output_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
-`
+`, recent, recent)
+}
 
 func writeTestTranscript(t *testing.T, dir string) {
 	t.Helper()
@@ -38,7 +47,7 @@ func writeTestTranscript(t *testing.T, dir string) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projectDir, "sess-1.jsonl"), []byte(testTranscript), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(projectDir, "sess-1.jsonl"), []byte(testTranscript()), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
