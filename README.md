@@ -15,7 +15,7 @@ A Claude Pro/Max subscription is metered by two rolling windows — a 5-hour ses
 
 tokenwarden is a cross-platform desktop app that holds a queue of real work and paces it against your own Claude subscription, so weekly capacity lands as close to fully used as you choose — while reserving headroom for the hours you want Claude for yourself.
 
-> **Status: pre-alpha.** Requirements and architecture are settled and the foundational spike is complete. Implementation has not started. See [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md).
+> **Status: early alpha.** The daemon, CLI, and a basic local web UI all work end to end — you can queue jobs, dispatch them against your real `claude` CLI, and watch usage/scheduler state in a browser. The budget-aware dispatch loop runs but stays a no-op until you opt in. Not yet built: the native desktop shell, the active (PTY sentinel) capture path, and the usage timeline/breakdown views. See [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) and [`CLAUDE.md`](CLAUDE.md#current-phase) for exactly what's done.
 
 ---
 
@@ -56,8 +56,77 @@ tray + desktop shell (thin)  ──HTTP/SSE──▶  tokenwardend (Go daemon)
 ## Requirements
 
 - A Claude **Pro or Max** subscription. Plan-limit telemetry is not exposed on Free, API-key, or cloud-provider auth.
-- Claude Code v2.1.152 or later, installed and logged in.
+- Claude Code v2.1.152 or later, installed and logged in (the `claude` binary must be on your `PATH`).
 - macOS, Linux, or Windows.
+- [Go](https://go.dev/dl/) 1.25+ to build the daemon and CLI.
+- [Node.js](https://nodejs.org/) 20+ (only if you want the web UI — the daemon and CLI build and run fine without it). If your system Node is older, [nvm](https://github.com/nvm-sh/nvm) is the easiest way to get a current one: `nvm install --lts && nvm use --lts`.
+- [Task](https://taskfile.dev) (optional but recommended — wraps the commands below): `brew install go-task`, or `go install github.com/go-task/task/v3/cmd/task@latest`.
+
+## Building and running
+
+There's no packaged release yet — build from source. All commands below assume the repo root as your working directory.
+
+### 1. Build the daemon and CLI
+
+```bash
+task build          # → ./bin/tokenwardend, ./bin/tokenwarden, ./bin/twprobe
+```
+
+Without `task`, the equivalent is:
+
+```bash
+go build -o bin/ ./cmd/tokenwardend
+go build -o bin/ ./cmd/tokenwarden
+go build -o bin/ ./cmd/twprobe
+```
+
+### 2. Run the daemon
+
+```bash
+task run             # builds + runs tokenwardend in the foreground
+# or directly:
+./bin/tokenwardend
+```
+
+By default it listens on `127.0.0.1:7842` and stores its database in the OS-appropriate per-user config directory (e.g. `~/Library/Application Support/tokenwarden` on macOS). Override with `TOKENWARDEN_LISTEN_ADDR`, `TOKENWARDEN_DATA_DIR`, or `TOKENWARDEN_DB_PATH` env vars, or a `config.json` in that same directory — see `internal/config` for the full list.
+
+### 3. Drive it from the CLI
+
+With the daemon running (in another terminal):
+
+```bash
+./bin/tokenwarden status
+./bin/tokenwarden queue add --kind research --prompt "Summarize the open issues in this repo"
+./bin/tokenwarden queue list
+./bin/tokenwarden queue dispatch <job-id>       # runs it against your real claude CLI
+./bin/tokenwarden usage                          # 5h/7d window usage, ground truth, calibration
+./bin/tokenwarden scheduler config set --enabled --aggressiveness 60
+./bin/tokenwarden kill-switch status
+```
+
+Run `./bin/tokenwarden` with no arguments for the full command list. Set `TOKENWARDEN_ADDR` if the daemon isn't on its default address.
+
+**Optional:** `./bin/tokenwarden probe install` wires `twprobe` into Claude Code's `statusLine` setting, so your own interactive sessions feed the daemon real rate-limit readings for free (see [`docs/SPIKE-001-usage-telemetry.md`](docs/SPIKE-001-usage-telemetry.md) for why this is the only way to get that signal today).
+
+### 4. Run the web UI
+
+The UI is a separate local web app the daemon serves — see `ui/` and [`CLAUDE.md`](CLAUDE.md) for the full design.
+
+**For local development** (hot reload, points at an already-running daemon):
+
+```bash
+task ui:install      # once
+task ui:dev           # Vite dev server at http://localhost:5173
+```
+
+**For a production build**, served by the daemon itself at its own address (`http://127.0.0.1:7842` by default) — no separate dev server needed:
+
+```bash
+task ui:build          # outputs ui/dist
+task run                # (re)start the daemon — it picks up ui/dist automatically if present
+```
+
+If `ui/dist` doesn't exist, the daemon just runs API-only — building the UI is entirely optional.
 
 ## Documentation
 
