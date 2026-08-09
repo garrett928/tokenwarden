@@ -3,9 +3,9 @@
 // extendable by copying a case.
 
 export type Route =
+  | { name: 'home' }
   | { name: 'dashboard' }
   | { name: 'jobs' }
-  | { name: 'job-new' }
   | { name: 'job-detail'; id: string }
   | { name: 'scheduler' }
 
@@ -13,13 +13,16 @@ export function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, '') || '/'
   const parts = path.split('/').filter(Boolean)
 
-  if (parts.length === 0) return { name: 'dashboard' }
+  // The landing page is the prompt composer (CreateJob) — /jobs/new is
+  // kept as an alias so existing links/bookmarks still land there.
+  if (parts.length === 0) return { name: 'home' }
   if (parts[0] === 'jobs' && parts.length === 1) return { name: 'jobs' }
-  if (parts[0] === 'jobs' && parts[1] === 'new') return { name: 'job-new' }
+  if (parts[0] === 'jobs' && parts[1] === 'new') return { name: 'home' }
   if (parts[0] === 'jobs' && parts[1]) return { name: 'job-detail', id: decodeURIComponent(parts[1]) }
+  if (parts[0] === 'dashboard') return { name: 'dashboard' }
   if (parts[0] === 'scheduler') return { name: 'scheduler' }
 
-  return { name: 'dashboard' }
+  return { name: 'home' }
 }
 
 export function navigate(hash: string): void {

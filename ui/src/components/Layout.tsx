@@ -4,8 +4,9 @@ import type { ThemePreference } from '../theme'
 import { getStoredTheme, setStoredTheme } from '../theme'
 
 const NAV = [
-  { href: '#/', label: 'Dashboard' },
+  { href: '#/', label: 'New job' },
   { href: '#/jobs', label: 'Jobs' },
+  { href: '#/dashboard', label: 'Usage' },
   { href: '#/scheduler', label: 'Scheduler' },
 ]
 

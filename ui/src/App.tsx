@@ -9,12 +9,12 @@ import SchedulerConfig from './pages/SchedulerConfig'
 
 function routeToPage(route: Route) {
   switch (route.name) {
+    case 'home':
+      return <CreateJob />
     case 'dashboard':
       return <Dashboard />
     case 'jobs':
       return <JobsList />
-    case 'job-new':
-      return <CreateJob />
     case 'job-detail':
       return <JobDetail id={route.id} />
     case 'scheduler':

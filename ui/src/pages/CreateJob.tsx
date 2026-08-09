@@ -6,6 +6,30 @@ import { navigate, jobDetailPath } from '../router'
 
 const JOB_KINDS: JobKind[] = ['research', 'plan', 'code', 'review', 'freeform']
 
+// Short model aliases the `claude` CLI resolves itself (to whatever the
+// latest point release is) — tokenwarden never hardcodes a specific
+// dated model id, so this list doesn't need to track releases.
+const MODELS = [
+  { value: '', label: 'Default' },
+  { value: 'opus', label: 'Opus' },
+  { value: 'sonnet', label: 'Sonnet' },
+  { value: 'haiku', label: 'Haiku' },
+]
+
+const EFFORTS = [
+  { value: '', label: 'Default' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'Extra high' },
+  { value: 'max', label: 'Max' },
+]
+
+// This is the landing page: a prompt composer that looks like a normal
+// agent chat session, except submitting doesn't run anything inline — it
+// queues a job for the daemon's dispatch loop (or a manual dispatch) to
+// pick up in the background. See internal/scheduler and
+// dispatch.DispatchOne for what happens after this.
 export default function CreateJob() {
   const [kind, setKind] = useState<JobKind>('research')
   const [prompt, setPrompt] = useState('')
@@ -46,110 +70,111 @@ export default function CreateJob() {
   }
 
   return (
-    <div className="stack">
-      <h1>New Job</h1>
+    <div
+      className="stack"
+      style={{ maxWidth: '760px', margin: '0 auto', paddingTop: '8vh', gap: '20px' }}
+    >
+      <div className="stack" style={{ gap: '4px', textAlign: 'center' }}>
+        <h1 style={{ margin: 0 }}>What should Claude work on?</h1>
+        <p className="muted" style={{ margin: 0 }}>
+          Queue it here and it runs in the background, paced against your budget — not in this
+          window.
+        </p>
+      </div>
 
       {error && <ErrorState error={error} />}
 
-      <form onSubmit={handleSubmit} className="stack" style={{ maxWidth: '600px' }}>
-        <div className="stack" style={{ gap: '8px' }}>
-          <label htmlFor="kind" style={{ fontSize: '12px', fontWeight: 600 }}>
-            Kind *
-          </label>
-          <select
-            id="kind"
-            value={kind}
-            onChange={(e) => setKind(e.target.value as JobKind)}
-            required
-          >
-            {JOB_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="stack" style={{ gap: '8px' }}>
-          <label htmlFor="prompt" style={{ fontSize: '12px', fontWeight: 600 }}>
-            Prompt *
-          </label>
+      <form onSubmit={handleSubmit} className="stack" style={{ gap: '12px' }}>
+        <div
+          className="card"
+          style={{ padding: 0, overflow: 'hidden', border: '1px solid var(--border)' }}
+        >
           <textarea
             id="prompt"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Enter the job prompt..."
+            placeholder="Describe the task — as much context as you'd give in a live session…"
             required
-            rows={6}
-            style={{ fontFamily: 'monospace', fontSize: '13px' }}
+            autoFocus
+            rows={8}
+            style={{
+              width: '100%',
+              border: 'none',
+              borderRadius: 0,
+              resize: 'vertical',
+              fontSize: '15px',
+              padding: '16px',
+            }}
           />
-          {!prompt.trim() && (
-            <p style={{ fontSize: '12px', color: 'var(--danger)', margin: '0' }}>
-              Prompt is required
-            </p>
-          )}
-        </div>
 
-        <div className="stack" style={{ gap: '8px' }}>
-          <label htmlFor="workspace" style={{ fontSize: '12px', fontWeight: 600 }}>
-            Workspace
-          </label>
-          <input
-            id="workspace"
-            type="text"
-            value={workspace}
-            onChange={(e) => setWorkspace(e.target.value)}
-            placeholder="Optional workspace name"
-          />
-        </div>
+          <div
+            className="row"
+            style={{
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '8px',
+              padding: '10px 12px',
+              borderTop: '1px solid var(--border)',
+              background: 'var(--bg)',
+            }}
+          >
+            <div className="row" style={{ flexWrap: 'wrap', gap: '8px' }}>
+              <select
+                aria-label="Kind"
+                value={kind}
+                onChange={(e) => setKind(e.target.value as JobKind)}
+              >
+                {JOB_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
 
-        <div className="stack" style={{ gap: '8px' }}>
-          <label htmlFor="model" style={{ fontSize: '12px', fontWeight: 600 }}>
-            Model
-          </label>
-          <input
-            id="model"
-            type="text"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder="e.g., claude-opus-4"
-          />
-        </div>
+              <select aria-label="Model" value={model} onChange={(e) => setModel(e.target.value)}>
+                {MODELS.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.value ? m.label : 'Model: default'}
+                  </option>
+                ))}
+              </select>
 
-        <div className="stack" style={{ gap: '8px' }}>
-          <label htmlFor="effort" style={{ fontSize: '12px', fontWeight: 600 }}>
-            Effort
-          </label>
-          <input
-            id="effort"
-            type="text"
-            value={effort}
-            onChange={(e) => setEffort(e.target.value)}
-            placeholder="e.g., thorough"
-          />
-        </div>
+              <select
+                aria-label="Effort"
+                value={effort}
+                onChange={(e) => setEffort(e.target.value)}
+              >
+                {EFFORTS.map((ef) => (
+                  <option key={ef.value} value={ef.value}>
+                    {ef.value ? ef.label : 'Effort: default'}
+                  </option>
+                ))}
+              </select>
 
-        <div className="stack" style={{ gap: '8px' }}>
-          <label htmlFor="priority" style={{ fontSize: '12px', fontWeight: 600 }}>
-            Priority
-          </label>
-          <input
-            id="priority"
-            type="number"
-            value={priority}
-            onChange={(e) => setPriority(Number(e.target.value))}
-            placeholder="0"
-          />
-        </div>
+              <input
+                aria-label="Priority"
+                type="number"
+                value={priority}
+                onChange={(e) => setPriority(Number(e.target.value))}
+                title="Priority (higher runs first)"
+                style={{ width: '70px' }}
+              />
 
-        <button
-          type="submit"
-          className="primary"
-          disabled={loading || !prompt.trim()}
-          style={{ alignSelf: 'flex-start' }}
-        >
-          {loading ? 'Creating…' : 'Create Job'}
-        </button>
+              <input
+                aria-label="Workspace"
+                type="text"
+                value={workspace}
+                onChange={(e) => setWorkspace(e.target.value)}
+                placeholder="Workspace (optional)"
+                style={{ width: '160px' }}
+              />
+            </div>
+
+            <button type="submit" className="primary" disabled={loading || !prompt.trim()}>
+              {loading ? 'Queuing…' : 'Queue job'}
+            </button>
+          </div>
+        </div>
       </form>
     </div>
   )
