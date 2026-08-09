@@ -361,6 +361,91 @@ func printJob(j api.JobResponse) {
 	}
 }
 
+func cmdSchedulerConfigShow(args []string) error {
+	fs := flag.NewFlagSet("scheduler config show", flag.ExitOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	cfg, err := newClient().GetSchedulerConfig(ctx)
+	if err != nil {
+		return err
+	}
+	printSchedulerConfig(cfg)
+	return nil
+}
+
+func cmdSchedulerConfigSet(args []string) error {
+	fs := flag.NewFlagSet("scheduler config set", flag.ExitOnError)
+	enabled := fs.Bool("enabled", false, "enable the scheduler")
+	disabled := fs.Bool("disabled", false, "disable the scheduler")
+	aggressiveness := fs.Int("aggressiveness", -1, "0-100: how much of weekly capacity to target, and how full to let the 5h window get (FR-SCHED-1); -1 leaves unchanged")
+	maxBudget := fs.Float64("max-budget-usd", -1, "global safety cap in USD; negative leaves unchanged")
+	clearMaxBudget := fs.Bool("clear-max-budget-usd", false, "remove the global safety cap")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *enabled && *disabled {
+		return fmt.Errorf("--enabled and --disabled are mutually exclusive")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	client := newClient()
+
+	// Reserved blocks and preferred windows aren't yet settable from the
+	// CLI (only via the API directly) — fetch the current config first so
+	// a --aggressiveness-only call doesn't wipe them out, since PUT
+	// replaces the whole config.
+	current, err := client.GetSchedulerConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	req := api.UpdateSchedulerConfigRequest{
+		Enabled:          current.Enabled,
+		Aggressiveness:   current.Aggressiveness,
+		ReservedBlocks:   current.ReservedBlocks,
+		PreferredWindows: current.PreferredWindows,
+		MaxBudgetUSD:     current.MaxBudgetUSD,
+	}
+	if *enabled {
+		req.Enabled = true
+	}
+	if *disabled {
+		req.Enabled = false
+	}
+	if *aggressiveness >= 0 {
+		req.Aggressiveness = *aggressiveness
+	}
+	if *clearMaxBudget {
+		req.MaxBudgetUSD = nil
+	} else if *maxBudget >= 0 {
+		req.MaxBudgetUSD = maxBudget
+	}
+
+	updated, err := client.UpdateSchedulerConfig(ctx, req)
+	if err != nil {
+		return err
+	}
+	printSchedulerConfig(updated)
+	return nil
+}
+
+func printSchedulerConfig(cfg api.SchedulerConfigResponse) {
+	fmt.Printf("Enabled:           %v\n", cfg.Enabled)
+	fmt.Printf("Aggressiveness:    %d%%\n", cfg.Aggressiveness)
+	if cfg.MaxBudgetUSD != nil {
+		fmt.Printf("Max budget:        $%.2f\n", *cfg.MaxBudgetUSD)
+	} else {
+		fmt.Println("Max budget:        (none)")
+	}
+	fmt.Printf("Reserved blocks:   %d configured\n", len(cfg.ReservedBlocks))
+	fmt.Printf("Preferred windows: %d configured\n", len(cfg.PreferredWindows))
+}
+
 func splitNonEmpty(s string) []string {
 	if strings.TrimSpace(s) == "" {
 		return nil

@@ -10,21 +10,23 @@ import (
 	"tokenwarden/internal/budget"
 	"tokenwarden/internal/dispatch"
 	"tokenwarden/internal/queue"
+	"tokenwarden/internal/store"
 )
 
 // Server is an http.Handler exposing the job queue API. Construct with
 // NewServer and mount however you like — the daemon wraps it directly in
 // http.ListenAndServe; tests use httptest.NewServer.
 type Server struct {
+	store    *store.Store
 	queue    *queue.Queue
 	dispatch *dispatch.Dispatcher
 	ledger   *budget.Ledger
 	mux      *http.ServeMux
 }
 
-// NewServer builds a Server backed by q, d, and l.
-func NewServer(q *queue.Queue, d *dispatch.Dispatcher, l *budget.Ledger) *Server {
-	s := &Server{queue: q, dispatch: d, ledger: l, mux: http.NewServeMux()}
+// NewServer builds a Server backed by st, q, d, and l.
+func NewServer(st *store.Store, q *queue.Queue, d *dispatch.Dispatcher, l *budget.Ledger) *Server {
+	s := &Server{store: st, queue: q, dispatch: d, ledger: l, mux: http.NewServeMux()}
 	s.routes()
 	return s
 }
@@ -45,6 +47,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/kill-switch/resume", s.handleResumeDispatch)
 	s.mux.HandleFunc("GET /api/usage", s.handleUsage)
 	s.mux.HandleFunc("POST /api/ground-truth", s.handleRecordGroundTruth)
+	s.mux.HandleFunc("GET /api/scheduler/config", s.handleGetSchedulerConfig)
+	s.mux.HandleFunc("PUT /api/scheduler/config", s.handleUpdateSchedulerConfig)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
