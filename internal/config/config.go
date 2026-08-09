@@ -33,11 +33,18 @@ type Config struct {
 	// DBPath overrides where the SQLite file lives. Empty means
 	// DataDir/tokenwarden.db — see ResolvedDBPath.
 	DBPath string `json:"db_path,omitempty"`
+
+	// UIDistDir is where the daemon looks for a built web UI (ui/dist) to
+	// serve as static files. CWD-relative by design for this phase — there
+	// is no installed-binary layout yet (that's desktop-shell territory).
+	// A missing directory is not an error: the daemon just runs API-only.
+	UIDistDir string `json:"ui_dist_dir,omitempty"`
 }
 
 const (
 	DefaultListenAddr       = "127.0.0.1:7842"
 	defaultClaudeBinaryPath = "claude"
+	defaultUIDistDir        = "ui/dist"
 	appDirName              = "tokenwarden"
 	dbFileName              = "tokenwarden.db"
 	configFileName          = "config.json"
@@ -55,6 +62,7 @@ func Default() (Config, error) {
 		DataDir:          dir,
 		ListenAddr:       DefaultListenAddr,
 		ClaudeBinaryPath: defaultClaudeBinaryPath,
+		UIDistDir:        defaultUIDistDir,
 	}, nil
 }
 
@@ -129,6 +137,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("TOKENWARDEN_DB_PATH"); v != "" {
 		cfg.DBPath = v
+	}
+	if v := os.Getenv("TOKENWARDEN_UI_DIST_DIR"); v != "" {
+		cfg.UIDistDir = v
 	}
 }
 
