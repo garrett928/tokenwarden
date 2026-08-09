@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"tokenwarden/internal/api"
 	"tokenwarden/internal/cliclient"
 	"tokenwarden/internal/config"
+	"tokenwarden/internal/store"
 )
 
 const requestTimeout = 10 * time.Second
@@ -361,6 +363,172 @@ func printJob(j api.JobResponse) {
 	}
 }
 
+// parseTimeBlock parses a time block in format [Days:]HH:MM-HH:MM.
+// Days is optional, comma-separated three-letter weekday abbreviations (case-insensitive).
+// HH:MM-HH:MM is 24-hour time; EndMin <= StartMin means wraparound past midnight.
+func parseTimeBlock(s string) (store.TimeBlock, error) {
+	// Try parsing as pure time range first (no day prefix).
+	if parts := strings.Split(s, "-"); len(parts) == 2 {
+		// Both parts should look like HH:MM. If the first part also contains ':'
+		// and might be a day list, we need to disambiguate.
+		firstPart := parts[0]
+		if colonIdx := strings.LastIndex(firstPart, ":"); colonIdx > 0 {
+			// There's at least one ':' in the first part. Check if it's just HH:MM
+			// by trying to parse HH:MM.
+			before := firstPart[:colonIdx]
+			after := firstPart[colonIdx+1:]
+			_, errBefore := strconv.Atoi(before)
+			_, errAfter := strconv.Atoi(after)
+			if errBefore == nil && errAfter == nil && len(before) <= 2 && len(after) == 2 {
+				// Looks like HH:MM with no day prefix, parse as pure time range.
+				return parseTimeRange(s)
+			}
+			// Otherwise, split on the first ':' to separate days from time range.
+		}
+		// Try as pure time range anyway.
+		tb, err := parseTimeRange(s)
+		if err == nil {
+			return tb, nil
+		}
+	}
+
+	// Split on first ':' to separate day list from time range.
+	colonIdx := strings.Index(s, ":")
+	if colonIdx < 0 {
+		return store.TimeBlock{}, fmt.Errorf("invalid time block %q: no colon found", s)
+	}
+
+	dayStr := s[:colonIdx]
+	timeStr := s[colonIdx+1:]
+
+	// Parse day list.
+	days, err := parseDayList(dayStr)
+	if err != nil {
+		return store.TimeBlock{}, fmt.Errorf("invalid time block %q: %w", s, err)
+	}
+
+	// Parse time range.
+	timeBlock, err := parseTimeRange(timeStr)
+	if err != nil {
+		return store.TimeBlock{}, fmt.Errorf("invalid time block %q: %w", s, err)
+	}
+
+	timeBlock.Days = days
+	return timeBlock, nil
+}
+
+// parseTimeRange parses HH:MM-HH:MM into start and end minutes since midnight.
+func parseTimeRange(s string) (store.TimeBlock, error) {
+	parts := strings.Split(s, "-")
+	if len(parts) != 2 {
+		return store.TimeBlock{}, fmt.Errorf("time range must be HH:MM-HH:MM")
+	}
+
+	start, err := parseTime(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return store.TimeBlock{}, err
+	}
+
+	end, err := parseTime(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return store.TimeBlock{}, err
+	}
+
+	if start < 0 || start >= 1440 || end < 0 || end >= 1440 {
+		return store.TimeBlock{}, fmt.Errorf("minutes must be in [0, 1440)")
+	}
+
+	return store.TimeBlock{StartMin: start, EndMin: end}, nil
+}
+
+// parseTime parses HH:MM into minutes since midnight.
+func parseTime(s string) (int, error) {
+	t, err := time.Parse("15:04", s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid time %q: %w", s, err)
+	}
+	return t.Hour()*60 + t.Minute(), nil
+}
+
+// parseDayList parses comma-separated three-letter weekday abbreviations.
+func parseDayList(s string) ([]time.Weekday, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil // empty = every day
+	}
+
+	dayMap := map[string]time.Weekday{
+		"sun": time.Sunday,
+		"mon": time.Monday,
+		"tue": time.Tuesday,
+		"wed": time.Wednesday,
+		"thu": time.Thursday,
+		"fri": time.Friday,
+		"sat": time.Saturday,
+	}
+
+	parts := strings.Split(s, ",")
+	var days []time.Weekday
+	for _, p := range parts {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == "" {
+			continue
+		}
+		day, ok := dayMap[p]
+		if !ok {
+			return nil, fmt.Errorf("unknown weekday abbreviation %q", p)
+		}
+		days = append(days, day)
+	}
+	return days, nil
+}
+
+// formatTimeBlock formats a TimeBlockDTO into [Days:]HH:MM-HH:MM format.
+// Output can be parsed back with parseTimeBlock.
+func formatTimeBlock(b api.TimeBlockDTO) string {
+	startH := b.StartMin / 60
+	startM := b.StartMin % 60
+	endH := b.EndMin / 60
+	endM := b.EndMin % 60
+
+	timeStr := fmt.Sprintf("%02d:%02d-%02d:%02d", startH, startM, endH, endM)
+
+	if len(b.Days) == 0 {
+		return timeStr
+	}
+
+	dayNames := []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+	var dayStrs []string
+	for _, d := range b.Days {
+		dayStrs = append(dayStrs, dayNames[d])
+	}
+	return fmt.Sprintf("%s:%s", strings.Join(dayStrs, ","), timeStr)
+}
+
+// timeBlockListValue is a flag.Value for repeatable time block flags.
+type timeBlockListValue struct {
+	blocks []store.TimeBlock
+}
+
+func (v *timeBlockListValue) String() string {
+	if len(v.blocks) == 0 {
+		return ""
+	}
+	var strs []string
+	for _, b := range v.blocks {
+		strs = append(strs, formatTimeBlock(storeBlockToDTO(b)))
+	}
+	return strings.Join(strs, ";")
+}
+
+func (v *timeBlockListValue) Set(s string) error {
+	block, err := parseTimeBlock(s)
+	if err != nil {
+		return err
+	}
+	v.blocks = append(v.blocks, block)
+	return nil
+}
+
 func cmdSchedulerConfigShow(args []string) error {
 	fs := flag.NewFlagSet("scheduler config show", flag.ExitOnError)
 	if err := fs.Parse(args); err != nil {
@@ -384,21 +552,33 @@ func cmdSchedulerConfigSet(args []string) error {
 	aggressiveness := fs.Int("aggressiveness", -1, "0-100: how much of weekly capacity to target, and how full to let the 5h window get (FR-SCHED-1); -1 leaves unchanged")
 	maxBudget := fs.Float64("max-budget-usd", -1, "global safety cap in USD; negative leaves unchanged")
 	clearMaxBudget := fs.Bool("clear-max-budget-usd", false, "remove the global safety cap")
+	clearReservedBlocks := fs.Bool("clear-reserved-blocks", false, "clear all reserved blocks")
+	clearPreferredWindows := fs.Bool("clear-preferred-windows", false, "clear all preferred windows")
+
+	var reservedBlocks, preferredWindows timeBlockListValue
+	fs.Var(&reservedBlocks, "reserved-block", "repeatable: add a reserved block in format [Days:]HH:MM-HH:MM")
+	fs.Var(&preferredWindows, "preferred-window", "repeatable: add a preferred window in format [Days:]HH:MM-HH:MM")
+
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+
 	if *enabled && *disabled {
 		return fmt.Errorf("--enabled and --disabled are mutually exclusive")
+	}
+	if len(reservedBlocks.blocks) > 0 && *clearReservedBlocks {
+		return fmt.Errorf("--reserved-block and --clear-reserved-blocks are mutually exclusive")
+	}
+	if len(preferredWindows.blocks) > 0 && *clearPreferredWindows {
+		return fmt.Errorf("--preferred-window and --clear-preferred-windows are mutually exclusive")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 	client := newClient()
 
-	// Reserved blocks and preferred windows aren't yet settable from the
-	// CLI (only via the API directly) — fetch the current config first so
-	// a --aggressiveness-only call doesn't wipe them out, since PUT
-	// replaces the whole config.
+	// Fetch the current config first so a partial update doesn't wipe fields,
+	// since PUT replaces the whole config.
 	current, err := client.GetSchedulerConfig(ctx)
 	if err != nil {
 		return err
@@ -426,12 +606,44 @@ func cmdSchedulerConfigSet(args []string) error {
 		req.MaxBudgetUSD = maxBudget
 	}
 
+	// Handle reserved blocks.
+	if *clearReservedBlocks {
+		req.ReservedBlocks = nil
+	} else if len(reservedBlocks.blocks) > 0 {
+		req.ReservedBlocks = storeBlocksToDTO(reservedBlocks.blocks)
+	}
+
+	// Handle preferred windows.
+	if *clearPreferredWindows {
+		req.PreferredWindows = nil
+	} else if len(preferredWindows.blocks) > 0 {
+		req.PreferredWindows = storeBlocksToDTO(preferredWindows.blocks)
+	}
+
 	updated, err := client.UpdateSchedulerConfig(ctx, req)
 	if err != nil {
 		return err
 	}
 	printSchedulerConfig(updated)
 	return nil
+}
+
+// storeBlockToDTO converts a single store.TimeBlock to an api.TimeBlockDTO.
+func storeBlockToDTO(b store.TimeBlock) api.TimeBlockDTO {
+	dto := api.TimeBlockDTO{StartMin: b.StartMin, EndMin: b.EndMin}
+	for _, d := range b.Days {
+		dto.Days = append(dto.Days, int(d))
+	}
+	return dto
+}
+
+// storeBlocksToDTO converts store.TimeBlock to api.TimeBlockDTO.
+func storeBlocksToDTO(blocks []store.TimeBlock) []api.TimeBlockDTO {
+	var dtos []api.TimeBlockDTO
+	for _, b := range blocks {
+		dtos = append(dtos, storeBlockToDTO(b))
+	}
+	return dtos
 }
 
 func printSchedulerConfig(cfg api.SchedulerConfigResponse) {
@@ -442,8 +654,32 @@ func printSchedulerConfig(cfg api.SchedulerConfigResponse) {
 	} else {
 		fmt.Println("Max budget:        (none)")
 	}
-	fmt.Printf("Reserved blocks:   %d configured\n", len(cfg.ReservedBlocks))
-	fmt.Printf("Preferred windows: %d configured\n", len(cfg.PreferredWindows))
+
+	if len(cfg.ReservedBlocks) == 0 {
+		fmt.Println("Reserved blocks:   (none)")
+	} else {
+		fmt.Println("Reserved blocks:")
+		for _, b := range cfg.ReservedBlocks {
+			formatted := formatTimeBlock(b)
+			if len(b.Days) == 0 {
+				formatted += " (every day)"
+			}
+			fmt.Printf("  %s\n", formatted)
+		}
+	}
+
+	if len(cfg.PreferredWindows) == 0 {
+		fmt.Println("Preferred windows: (none)")
+	} else {
+		fmt.Println("Preferred windows:")
+		for _, w := range cfg.PreferredWindows {
+			formatted := formatTimeBlock(w)
+			if len(w.Days) == 0 {
+				formatted += " (every day)"
+			}
+			fmt.Printf("  %s\n", formatted)
+		}
+	}
 }
 
 func splitNonEmpty(s string) []string {
