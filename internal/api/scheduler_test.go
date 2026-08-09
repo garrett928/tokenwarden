@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"testing"
 )
@@ -39,6 +40,34 @@ func TestGetSchedulerConfig_Default(t *testing.T) {
 	got := decode[SchedulerConfigResponse](t, resp)
 	if got.Enabled {
 		t.Errorf("Enabled = true by default, want false")
+	}
+}
+
+// TestGetSchedulerConfig_EmptyBlockListsAreArraysNotNull guards against a
+// real bug hit while building the web UI: Go marshals a nil slice as JSON
+// null, but ui/src/api/types.ts declares reserved_blocks/preferred_windows
+// as always-arrays — a null crashed the UI's TimeBlockEditor on first load
+// (fresh config, no blocks configured). The response must always contain
+// literal "[]", never "null", for these two fields.
+func TestGetSchedulerConfig_EmptyBlockListsAreArraysNotNull(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp, err := http.Get(srv.URL + "/api/scheduler/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if bytes.Contains(body, []byte(`"reserved_blocks":null`)) {
+		t.Errorf("reserved_blocks serialized as null, want []: %s", body)
+	}
+	if bytes.Contains(body, []byte(`"preferred_windows":null`)) {
+		t.Errorf("preferred_windows serialized as null, want []: %s", body)
 	}
 }
 

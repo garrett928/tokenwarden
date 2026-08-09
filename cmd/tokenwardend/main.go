@@ -86,6 +86,7 @@ func run() error {
 	go sched.Run(ctx)
 
 	handler := api.NewServer(st, q, disp, ledger)
+	handler.MountUI(cfg.UIDistDir)
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: handler,

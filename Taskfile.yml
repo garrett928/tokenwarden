@@ -41,3 +41,33 @@ tasks:
     desc: Remove build output
     cmds:
       - rm -rf {{.BIN_DIR}}
+
+  ui:install:
+    desc: Install UI dependencies
+    dir: ui
+    cmds:
+      - npm install
+
+  ui:dev:
+    desc: Run the UI dev server (proxies /api to a running daemon on 127.0.0.1:7842)
+    dir: ui
+    cmds:
+      - npm run dev
+
+  ui:build:
+    desc: Build the UI for production (output ui/dist, served by the daemon if present)
+    dir: ui
+    cmds:
+      - npm run build
+
+  ui:lint:
+    desc: Lint/typecheck the UI
+    dir: ui
+    cmds:
+      - npm run lint
+
+  build:all:
+    desc: Build Go binaries and the UI (requires Node — plain `build` stays Go-only)
+    cmds:
+      - task: build
+      - task: ui:build

@@ -47,10 +47,16 @@ type SchedulerConfigResponse struct {
 
 func newSchedulerConfigResponse(cfg store.SchedulerConfig) SchedulerConfigResponse {
 	resp := SchedulerConfigResponse{
-		Enabled:        cfg.Enabled,
-		Aggressiveness: cfg.Aggressiveness,
-		MaxBudgetUSD:   cfg.MaxBudgetUSD,
-		UpdatedAt:      cfg.UpdatedAt.Unix(),
+		Enabled: cfg.Enabled,
+		// ReservedBlocks/PreferredWindows start as []TimeBlockDTO{} rather
+		// than nil so the JSON body always has "[]", never "null" — the UI
+		// (and any other client) can treat these fields as always-arrays
+		// without a null check.
+		ReservedBlocks:   []TimeBlockDTO{},
+		PreferredWindows: []TimeBlockDTO{},
+		Aggressiveness:   cfg.Aggressiveness,
+		MaxBudgetUSD:     cfg.MaxBudgetUSD,
+		UpdatedAt:        cfg.UpdatedAt.Unix(),
 	}
 	for _, b := range cfg.ReservedBlocks {
 		resp.ReservedBlocks = append(resp.ReservedBlocks, newTimeBlockDTO(b))

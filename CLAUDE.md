@@ -18,8 +18,9 @@ Budget-aware scheduler for Claude Code work. See [`docs/REQUIREMENTS.md`](docs/R
 - `internal/backfill` — FR-USAGE-2: indexes `~/.claude/projects/**/*.jsonl` (the transcripts Claude Code itself writes for every interactive session) into the ledger via `budget.Ledger.RecordHistoricalUsage`, so usage totals aren't blind to work done outside tokenwarden. Idempotent by transcript-line `uuid` (`store.RecordUsageIfNew`'s `source_uuid` uniqueness), so re-indexing on every daemon start is safe and cheap. No cost data exists in the transcript format, so backfilled entries always carry `CostUSD: 0` — a known limitation, not a bug. Depends only on `budget`.
 - `internal/scheduler` — the budget-aware dispatch loop (REQUIREMENTS.md §6.2): `Engine.Tick` refreshes fused usage state (ground truth if fresh, else ledger converted through `budget` calibration — `Source` is `SourceUnknown` rather than a guess when neither exists), applies the admission checks (`Decide`: reserved blocks, the aggressiveness ceiling on the 5h/7d windows with §6.3's safety margin), and dispatches the next runnable job via `dispatch.DispatchOne` when nothing holds it back — one job at a time, synchronously, per §10 item 2/3. `Engine.Run` ticks on a 30s cadence (`TickInterval`) until its context is cancelled; a `Clock` seam (`RealClock`/`SimClock`) lets tests drive a simulated week instantly. Depends on `store` (for `SchedulerConfig`), `queue`, `dispatch`, and `budget`. Not yet implemented: §6.2 steps 5-6 (burn-rate throttling/concurrency — nothing here runs more than one job at a time yet) and §6.4's cost-predicted oversized-job fitting (`queue.DeferOversized` exists for a future slice to call).
 - `internal/cliclient` — HTTP client shared by `cmd/tokenwarden`.
+- `ui/` — the local web UI (NFR-UI-2: "a local web app served by the daemon; the desktop window is a thin shell over it" — the desktop shell itself doesn't exist yet, this is web-only). React 18 + TypeScript + Vite, no router/state library (a ~15-line hash router in `src/router.ts`, plain `useState`/`useEffect` against the typed fetch wrapper in `src/api/client.ts`). `src/api/types.ts` mirrors every `internal/api` DTO field-for-field — keep it in sync by hand when the Go DTOs change, nothing generates it. Dev: `task ui:dev` (Vite on :5173, proxies `/api` to the daemon per `TOKENWARDEN_API_PROXY_TARGET`, default `127.0.0.1:7842` — no CORS handling needed anywhere since the browser only ever talks to one origin). Production: `task ui:build` outputs `ui/dist`; `internal/api/static.go`'s `Server.MountUI` serves it with SPA fallback if the configured `TOKENWARDEN_UI_DIST_DIR` (default `ui/dist`, CWD-relative) exists, and is a silent no-op (API-only mode) if it doesn't — deliberately filesystem-based rather than `go:embed`, so `go build ./...` and Go-only CI never depend on a UI build existing. Pages: Dashboard (usage + kill switch), Jobs list, Create Job, Job detail, Scheduler config — maps 1:1 onto the existing API surface, no new backend endpoints. Node version pinned via `ui/.nvmrc` (24; the system default was 16, too old for current Vite).
 
-Dependencies point inward: `api → dispatch → {runner, queue, budget} → store`; `scheduler → {store, queue, dispatch, budget}`; `budget → runner` (for the `Result` type only); `backfill → budget`; `cmd/twprobe → internal/api` (for wire DTOs only, no store/business-logic dependency). Nothing in `store` imports `queue`, `runner`, `budget`, `dispatch`, `scheduler`, `backfill`, or `api`; `runner` never imports `queue` or `budget`.
+Dependencies point inward: `api → dispatch → {runner, queue, budget} → store`; `scheduler → {store, queue, dispatch, budget}`; `budget → runner` (for the `Result` type only); `backfill → budget`; `cmd/twprobe → internal/api` (for wire DTOs only, no store/business-logic dependency); `ui/ → internal/api` (wire shape only, via hand-mirrored TS types — no code-level dependency, just a contract both sides need to keep in sync). Nothing in `store` imports `queue`, `runner`, `budget`, `dispatch`, `scheduler`, `backfill`, or `api`; `runner` never imports `queue` or `budget`.
 
 ## Hard constraints
 
@@ -30,13 +31,18 @@ Dependencies point inward: `api → dispatch → {runner, queue, budget} → sto
 ## Commands
 
 ```bash
-task build   # build all binaries into ./bin
-task test    # go test ./... -race
-task lint    # go vet + golangci-lint
-task run     # build + run the daemon in foreground with local config
+task build     # build all binaries into ./bin — Go-only, works with no Node installed
+task test      # go test ./... -race
+task lint      # go vet + golangci-lint
+task run       # build + run the daemon in foreground with local config
+task build:all # task build + task ui:build — everything, requires Node
+task ui:install # npm install in ui/
+task ui:dev     # Vite dev server on :5173, proxies /api to a running daemon
+task ui:build   # production UI build to ui/dist, served by the daemon if present
+task ui:lint    # oxlint (typecheck + lint) for ui/
 ```
 
-(`Taskfile.yml` at repo root; install via `go install github.com/go-task/task/v3/cmd/task@latest` or see https://taskfile.dev.)
+(`Taskfile.yml` at repo root; install via `go install github.com/go-task/task/v3/cmd/task@latest` or see https://taskfile.dev. `task build`/`test`/`lint` deliberately stay Go-only — no Node dependency was added to the existing CI path.)
 
 ## Testing
 
@@ -68,4 +74,4 @@ See `docs/REQUIREMENTS.md` §"Implementation phases" via the plan history, or ju
 
 PR #13 merged; the CI failures on it were an Actions billing/runner-provisioning issue (private repo), not a code problem. Resolved by making the repo public (`garrett928/tokenwarden`) — public repos get unlimited free Actions minutes, so `.github/workflows/ci.yml`'s full OS matrix (`test` × 3 OSes, `cross-compile` × 5 targets on `macos-latest`) runs as originally designed; no workflow trimming needed.
 
-The next Phase 5 slice is whichever of the "not yet done" items above the user wants next — none of them block on each other, so pick by priority.
+**Basic local web UI (`ui/`, see Module layout above) is done** — a first UI milestone, not one of the numbered phases in `docs/REQUIREMENTS.md`'s original plan. Dashboard, Jobs list, Create Job, Job detail, and Scheduler config pages, all verified against a real running daemon in a browser (dev mode via `task ui:dev` and production mode via `task ui:build` + the daemon's static serving). One real bug found and fixed during verification: `GET /api/scheduler/config` used to serialize `reserved_blocks`/`preferred_windows` as JSON `null` instead of `[]` when empty (Go nil-slice marshaling), which crashed the UI's `TimeBlockEditor` on first load — fixed in `internal/api/scheduler.go`'s `newSchedulerConfigResponse`, regression-tested in `internal/api/scheduler_test.go`'s `TestGetSchedulerConfig_EmptyBlockListsAreArraysNotNull`. Next: a native desktop shell (Wails, per NFR-UI-2) is a separate, later phase; the "not yet done" Phase 5 items above remain open.
