@@ -97,6 +97,14 @@ type JobResponse struct {
 	FailureReason string `json:"failure_reason,omitempty"`
 	Result        string `json:"result,omitempty"`
 
+	// CostUSD is the sum of every ledger entry recorded for this job (see
+	// budget.Ledger.UsageForJob) — set by the handler, not by
+	// newJobResponse, since that's a pure function of store.Job with no
+	// ledger access. Omitted (nil) rather than 0 when the job hasn't
+	// produced any usage yet, so a client can tell "hasn't run" apart from
+	// "ran for free."
+	CostUSD *float64 `json:"cost_usd,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

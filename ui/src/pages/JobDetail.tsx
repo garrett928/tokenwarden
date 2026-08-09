@@ -173,6 +173,14 @@ export default function JobDetail({ id }: { id: string }) {
                 </div>
                 <div style={{ marginTop: '4px' }}>{job.resumable ? 'Yes' : 'No'}</div>
               </div>
+              <div>
+                <div className="muted" style={{ fontSize: '12px', fontWeight: 600 }}>
+                  Cost
+                </div>
+                <div style={{ marginTop: '4px' }}>
+                  {job.cost_usd !== undefined ? `$${job.cost_usd.toFixed(4)}` : '—'}
+                </div>
+              </div>
             </div>
           </div>
 

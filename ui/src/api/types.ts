@@ -66,6 +66,7 @@ export interface JobResponse {
   status: JobStatus
   failure_reason?: string
   result?: string
+  cost_usd?: number // sum of ledger entries recorded for this job; absent until it has run
   created_at: string
   updated_at: string
 }

@@ -141,3 +141,42 @@ func TestRecordUsageIfNew_RequiresSourceUUID(t *testing.T) {
 		t.Error("RecordUsageIfNew() with empty SourceUUID: want error, got nil")
 	}
 }
+
+func TestListUsageByJobID_FiltersByJob(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.RecordUsage(ctx, UsageEntry{JobID: "job_a", CostUSD: 0.01}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordUsage(ctx, UsageEntry{JobID: "job_a", CostUSD: 0.02}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordUsage(ctx, UsageEntry{JobID: "job_b", CostUSD: 0.99}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ListUsageByJobID(ctx, "job_a")
+	if err != nil {
+		t.Fatalf("ListUsageByJobID() error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListUsageByJobID(job_a) returned %d entries, want 2", len(got))
+	}
+	for _, e := range got {
+		if e.JobID != "job_a" {
+			t.Errorf("entry JobID = %q, want job_a", e.JobID)
+		}
+	}
+}
+
+func TestListUsageByJobID_NoEntriesReturnsEmptyNotError(t *testing.T) {
+	s := openTestStore(t)
+	got, err := s.ListUsageByJobID(context.Background(), "job_never_ran")
+	if err != nil {
+		t.Fatalf("ListUsageByJobID() error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListUsageByJobID(job_never_ran) returned %d entries, want 0", len(got))
+	}
+}

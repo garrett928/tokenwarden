@@ -41,7 +41,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]JobResponse, len(jobs))
 	for i, j := range jobs {
-		resp[i] = newJobResponse(j)
+		resp[i] = s.jobResponseWithCost(r.Context(), j)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -53,7 +53,7 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 		writeQueueError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newJobResponse(j))
+	writeJSON(w, http.StatusOK, s.jobResponseWithCost(r.Context(), j))
 }
 
 func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +68,7 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 		writeQueueError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newJobResponse(j))
+	writeJSON(w, http.StatusOK, s.jobResponseWithCost(r.Context(), j))
 }
 
 // handleDispatchJob runs a job right now. It marks the job Running
@@ -99,6 +99,25 @@ func (s *Server) handleDispatchJob(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, http.StatusAccepted, newJobResponse(job))
+}
+
+// jobResponseWithCost builds a JobResponse and fills in CostUSD from the
+// ledger. A ledger lookup failure is logged and treated as "no cost data"
+// rather than failing the whole request — cost is supplementary
+// information, not something a job-detail request should 500 over.
+func (s *Server) jobResponseWithCost(ctx context.Context, j store.Job) JobResponse {
+	resp := newJobResponse(j)
+
+	totals, err := s.ledger.UsageForJob(ctx, j.ID)
+	if err != nil {
+		log.Printf("api: getting usage for job %s: %v", j.ID, err)
+		return resp
+	}
+	if totals.EntryCount > 0 {
+		cost := totals.CostUSD
+		resp.CostUSD = &cost
+	}
+	return resp
 }
 
 // writeQueueError maps queue/store sentinel errors to HTTP status codes.

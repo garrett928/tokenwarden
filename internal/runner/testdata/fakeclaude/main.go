@@ -37,12 +37,18 @@ func main() {
 	}
 
 	// echoargs is not a fixture file — it dumps the argv fakeclaude actually
-	// received as a deliberately-unrecognized event type ("debug_argv"), so
-	// a test can both assert real subprocess argv matches what BuildArgs
-	// computed in isolation, and exercise the UnknownEvent forward-compat
-	// path on a real, non-fixture event.
+	// received, plus its own working directory, as a deliberately
+	// unrecognized event type ("debug_argv"), so a test can assert real
+	// subprocess argv matches what BuildArgs computed in isolation, assert
+	// what cmd.Dir the runner actually set, and exercise the UnknownEvent
+	// forward-compat path on a real, non-fixture event.
 	if fixture == "echoargs" {
-		payload := map[string]any{"type": "debug_argv", "argv": os.Args[1:]}
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "fakeclaude: getwd:", err)
+			os.Exit(2)
+		}
+		payload := map[string]any{"type": "debug_argv", "argv": os.Args[1:], "cwd": cwd}
 		b, err := json.Marshal(payload)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "fakeclaude: encoding argv:", err)
