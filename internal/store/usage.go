@@ -129,3 +129,38 @@ func (s *Store) ListUsageSince(ctx context.Context, since time.Time) ([]UsageEnt
 	}
 	return entries, nil
 }
+
+// ListUsageByJobID returns every usage entry recorded for jobID, ordered
+// oldest first. A job with no entries yet (not dispatched, or dispatched
+// but no result recorded) returns an empty slice, not an error.
+func (s *Store) ListUsageByJobID(ctx context.Context, jobID string) ([]UsageEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, job_id, model, input_tokens, cache_creation_input_tokens,
+			cache_read_input_tokens, output_tokens, cost_usd, recorded_at, source_uuid
+		FROM usage_entries
+		WHERE job_id = ?
+		ORDER BY recorded_at ASC
+	`, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("listing usage entries for job %s: %w", jobID, err)
+	}
+	defer rows.Close()
+
+	var entries []UsageEntry
+	for rows.Next() {
+		var e UsageEntry
+		var recordedAtUnix int64
+		if err := rows.Scan(
+			&e.ID, &e.JobID, &e.Model, &e.InputTokens, &e.CacheCreationInputTokens,
+			&e.CacheReadInputTokens, &e.OutputTokens, &e.CostUSD, &recordedAtUnix, &e.SourceUUID,
+		); err != nil {
+			return nil, fmt.Errorf("scanning usage entry: %w", err)
+		}
+		e.RecordedAt = time.Unix(recordedAtUnix, 0).UTC()
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating usage entries for job %s: %w", jobID, err)
+	}
+	return entries, nil
+}

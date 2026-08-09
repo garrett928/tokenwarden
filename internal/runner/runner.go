@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -61,6 +62,24 @@ func (r *Runner) Run(ctx context.Context, job store.Job, opts RunOptions) (Resul
 	}
 
 	cmd := exec.CommandContext(ctx, r.claudeBinary, args...)
+
+	// A job's subprocess must never inherit this daemon's own working
+	// directory: doing so means `claude` picks up *tokenwarden's own*
+	// CLAUDE.md as project context, and reasons like a software-engineering
+	// assistant for this repo regardless of what the job actually asked for
+	// (found via a real dispatch that refused an unrelated research task on
+	// exactly those grounds). job.Workspace is honored when set; otherwise
+	// every job gets its own fresh scratch directory rather than falling
+	// through to the daemon's cwd.
+	workDir := job.Workspace
+	if workDir == "" {
+		dir, err := os.MkdirTemp("", "tokenwarden-job-*")
+		if err != nil {
+			return Result{}, fmt.Errorf("creating scratch workspace: %w", err)
+		}
+		workDir = dir
+	}
+	cmd.Dir = workDir
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

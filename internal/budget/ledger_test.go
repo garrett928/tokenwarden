@@ -156,3 +156,47 @@ func TestRecordHistoricalUsage_Idempotent(t *testing.T) {
 		t.Errorf("InputTokens = %d, want 10", totals.InputTokens)
 	}
 }
+
+func TestUsageForJob_SumsOnlyThatJobsEntries(t *testing.T) {
+	l := openTestLedger(t)
+	ctx := context.Background()
+
+	if err := l.RecordResult(ctx, "job_a", runner.Result{
+		TotalCostUSD: 0.05,
+		Usage:        runner.Usage{InputTokens: 10, OutputTokens: 5},
+	}); err != nil {
+		t.Fatalf("RecordResult(job_a) error: %v", err)
+	}
+	if err := l.RecordResult(ctx, "job_b", runner.Result{
+		TotalCostUSD: 0.10,
+		Usage:        runner.Usage{InputTokens: 20, OutputTokens: 8},
+	}); err != nil {
+		t.Fatalf("RecordResult(job_b) error: %v", err)
+	}
+
+	totals, err := l.UsageForJob(ctx, "job_a")
+	if err != nil {
+		t.Fatalf("UsageForJob(job_a) error: %v", err)
+	}
+	if totals.EntryCount != 1 {
+		t.Errorf("EntryCount = %d, want 1 (only job_a's entry)", totals.EntryCount)
+	}
+	if totals.CostUSD != 0.05 {
+		t.Errorf("CostUSD = %v, want 0.05 (job_a's cost, not job_b's)", totals.CostUSD)
+	}
+	if totals.InputTokens != 10 {
+		t.Errorf("InputTokens = %d, want 10", totals.InputTokens)
+	}
+}
+
+func TestUsageForJob_NeverDispatchedIsZeroNotError(t *testing.T) {
+	l := openTestLedger(t)
+
+	totals, err := l.UsageForJob(context.Background(), "job_never_ran")
+	if err != nil {
+		t.Fatalf("UsageForJob() error: %v", err)
+	}
+	if totals.EntryCount != 0 {
+		t.Errorf("EntryCount = %d, want 0", totals.EntryCount)
+	}
+}

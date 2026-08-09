@@ -25,6 +25,21 @@ const EFFORTS = [
   { value: 'max', label: 'Max' },
 ]
 
+// Exactly internal/runner/safety.go's permissionModeAllowlist — the only
+// modes BuildArgs accepts for a freeform job. "bypassPermissions"
+// (--dangerously-skip-permissions) is deliberately never offered (FR-SAFE-1).
+const PERMISSION_MODES = ['dontAsk', 'plan', 'acceptEdits', 'default']
+
+// A representative set of tools a freeform job might want — not exhaustive,
+// just enough to build a real "generic assistant" (web access, a shell)
+// without needing to hand-type a tool name. Leaving every box unchecked
+// sends no allowed_tools at all, which is what makes freeform + dontAsk
+// behave like an ordinary unrestricted `claude -p` session rather than the
+// fixed, narrower profiles the other kinds get (research/plan/review are
+// permanently read-only + no-tools-beyond-read-only by design, not
+// something a job can loosen — see safety.go's profileFor doc comment).
+const FREEFORM_TOOLS = ['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'Bash', 'Write', 'Edit']
+
 // This is the landing page: a prompt composer that looks like a normal
 // agent chat session, except submitting doesn't run anything inline — it
 // queues a job for the daemon's dispatch loop (or a manual dispatch) to
@@ -37,8 +52,19 @@ export default function CreateJob() {
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState('')
   const [priority, setPriority] = useState(0)
+  const [permissionMode, setPermissionMode] = useState('dontAsk')
+  const [allowedTools, setAllowedTools] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
+
+  const toggleTool = (tool: string) => {
+    setAllowedTools((prev) => {
+      const next = new Set(prev)
+      if (next.has(tool)) next.delete(tool)
+      else next.add(tool)
+      return next
+    })
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -55,6 +81,8 @@ export default function CreateJob() {
       ...(workspace && { workspace }),
       ...(model && { model }),
       ...(effort && { effort }),
+      ...(kind === 'freeform' && { permission_mode: permissionMode }),
+      ...(kind === 'freeform' && allowedTools.size > 0 && { allowed_tools: Array.from(allowedTools) }),
     }
 
     try {
@@ -174,6 +202,57 @@ export default function CreateJob() {
               {loading ? 'Queuing…' : 'Queue job'}
             </button>
           </div>
+
+          {kind === 'freeform' && (
+            <div
+              className="stack"
+              style={{
+                gap: '8px',
+                padding: '10px 12px',
+                borderTop: '1px solid var(--border)',
+                background: 'var(--bg)',
+              }}
+            >
+              <p className="muted" style={{ margin: 0, fontSize: '12px' }}>
+                Freeform jobs choose their own autonomy posture — unlike research/plan/code/review,
+                which run a fixed, non-configurable profile. Leave every tool unchecked for an
+                unrestricted, general-purpose agent (equivalent to an ordinary <code>claude -p</code>{' '}
+                session); check specific tools to restrict it to just those.
+              </p>
+              <div className="row" style={{ flexWrap: 'wrap', gap: '12px' }}>
+                <label className="row" style={{ gap: '4px' }}>
+                  <span style={{ fontSize: '12px' }}>Permission mode</span>
+                  <select
+                    aria-label="Permission mode"
+                    value={permissionMode}
+                    onChange={(e) => setPermissionMode(e.target.value)}
+                  >
+                    {PERMISSION_MODES.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="row" style={{ flexWrap: 'wrap', gap: '10px' }}>
+                {FREEFORM_TOOLS.map((tool) => (
+                  <label
+                    key={tool}
+                    className="row"
+                    style={{ gap: '4px', fontSize: '12px', cursor: 'pointer' }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allowedTools.has(tool)}
+                      onChange={() => toggleTool(tool)}
+                    />
+                    {tool}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </form>
     </div>

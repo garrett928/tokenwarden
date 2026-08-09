@@ -224,3 +224,96 @@ func TestBuildArgs_ArgvReachesSubprocess(t *testing.T) {
 		t.Errorf("subprocess argv = %v, want %v (BuildArgs output)", payload.Argv, wantArgs)
 	}
 }
+
+// echoArgsCwd runs the echoargs fixture for job and returns the subprocess's
+// reported working directory (see fakeclaude's echoargs handling).
+func echoArgsCwd(t *testing.T, job store.Job) string {
+	t.Helper()
+	t.Setenv("FAKECLAUDE_FIXTURE", "echoargs")
+	r := New(fakeClaudeBin)
+
+	var debugEvent *UnknownEvent
+	_, runErr := r.Run(context.Background(), job, RunOptions{
+		OnEvent: func(e Event) {
+			if ue, ok := e.(UnknownEvent); ok && ue.Type == "debug_argv" {
+				debugEvent = &ue
+			}
+		},
+	})
+	if !errors.Is(runErr, ErrNoResultEvent) {
+		t.Fatalf("Run() error = %v, want ErrNoResultEvent (echoargs emits no result event)", runErr)
+	}
+	if debugEvent == nil {
+		t.Fatal("did not receive a debug_argv event from the subprocess")
+	}
+
+	var payload struct {
+		Cwd string `json:"cwd"`
+	}
+	if err := json.Unmarshal(debugEvent.Raw, &payload); err != nil {
+		t.Fatalf("decoding debug_argv payload: %v", err)
+	}
+	return payload.Cwd
+}
+
+// TestRun_HonorsJobWorkspaceAsCwd guards against the daemon's own working
+// directory ever leaking into a job's subprocess: a job with an explicit
+// Workspace must run there, not wherever tokenwardend happens to be
+// running from (which, in the real deployment, is this repo — a job
+// inheriting that would pick up tokenwarden's own CLAUDE.md as context).
+func TestRun_HonorsJobWorkspaceAsCwd(t *testing.T) {
+	workspace := t.TempDir()
+	job := store.Job{Kind: store.JobKindResearch, Prompt: "say pong", Workspace: workspace}
+
+	gotCwd := echoArgsCwd(t, job)
+
+	// Resolve symlinks on both sides: on macOS, t.TempDir() lives under
+	// /var which is a symlink to /private/var, and the subprocess reports
+	// its cwd already resolved.
+	wantCwd, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatalf("resolving workspace symlinks: %v", err)
+	}
+	gotResolved, err := filepath.EvalSymlinks(gotCwd)
+	if err != nil {
+		t.Fatalf("resolving subprocess cwd symlinks: %v", err)
+	}
+	if gotResolved != wantCwd {
+		t.Errorf("subprocess cwd = %q, want job.Workspace %q", gotResolved, wantCwd)
+	}
+}
+
+// TestRun_DefaultsToScratchDirWhenNoWorkspace guards the other half of the
+// same bug: a job with no Workspace must NOT fall through to the daemon's
+// own cwd — it gets a fresh scratch directory instead.
+func TestRun_DefaultsToScratchDirWhenNoWorkspace(t *testing.T) {
+	ownCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error: %v", err)
+	}
+
+	job := store.Job{Kind: store.JobKindResearch, Prompt: "say pong"}
+	gotCwd := echoArgsCwd(t, job)
+
+	if gotCwd == "" {
+		t.Fatal("subprocess cwd is empty")
+	}
+	ownResolved, err := filepath.EvalSymlinks(ownCwd)
+	if err != nil {
+		t.Fatalf("resolving own cwd symlinks: %v", err)
+	}
+	gotResolved, err := filepath.EvalSymlinks(gotCwd)
+	if err != nil {
+		t.Fatalf("resolving subprocess cwd symlinks: %v", err)
+	}
+	if gotResolved == ownResolved {
+		t.Errorf("subprocess cwd = %q, same as the test process's own cwd — want a fresh scratch dir", gotCwd)
+	}
+
+	// Two jobs with no Workspace must not collide on the same scratch dir.
+	job2 := store.Job{Kind: store.JobKindResearch, Prompt: "say pong"}
+	gotCwd2 := echoArgsCwd(t, job2)
+	if gotCwd2 == gotCwd {
+		t.Errorf("two unrelated jobs got the same scratch dir %q, want distinct dirs", gotCwd)
+	}
+}

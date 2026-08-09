@@ -98,6 +98,7 @@ export default function JobsList() {
                 <th>Kind</th>
                 <th>Status</th>
                 <th>Priority</th>
+                <th>Cost</th>
                 <th>Created</th>
                 <th>Updated</th>
               </tr>
@@ -115,6 +116,7 @@ export default function JobsList() {
                     <StatusBadge status={job.status} />
                   </td>
                   <td>{job.priority}</td>
+                  <td>{job.cost_usd !== undefined ? `$${job.cost_usd.toFixed(4)}` : '—'}</td>
                   <td>{formatDate(job.created_at)}</td>
                   <td>{formatDate(job.updated_at)}</td>
                 </tr>

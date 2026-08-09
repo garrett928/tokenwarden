@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"tokenwarden/internal/store"
 )
 
 // WindowTotals sums every usage entry ledger fell within a window. It is
@@ -38,7 +40,22 @@ func (l *Ledger) windowTotal(ctx context.Context, since time.Time) (WindowTotals
 	if err != nil {
 		return WindowTotals{}, fmt.Errorf("summing usage since %s: %w", since, err)
 	}
+	return sumEntries(entries), nil
+}
 
+// UsageForJob sums every ledger entry recorded for jobID — the tokens/cost
+// of that one job's dispatch(es), not a rolling time window. A job with no
+// entries yet returns a zero WindowTotals (EntryCount 0), not an error, so
+// a caller can distinguish "hasn't run" from "ran for free."
+func (l *Ledger) UsageForJob(ctx context.Context, jobID string) (WindowTotals, error) {
+	entries, err := l.store.ListUsageByJobID(ctx, jobID)
+	if err != nil {
+		return WindowTotals{}, fmt.Errorf("summing usage for job %s: %w", jobID, err)
+	}
+	return sumEntries(entries), nil
+}
+
+func sumEntries(entries []store.UsageEntry) WindowTotals {
 	var t WindowTotals
 	for _, e := range entries {
 		t.InputTokens += e.InputTokens
@@ -48,5 +65,5 @@ func (l *Ledger) windowTotal(ctx context.Context, since time.Time) (WindowTotals
 		t.CostUSD += e.CostUSD
 		t.EntryCount++
 	}
-	return t, nil
+	return t
 }

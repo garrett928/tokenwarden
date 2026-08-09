@@ -111,6 +111,31 @@ func TestDispatchJob_Success(t *testing.T) {
 	if final.Result != "pong" {
 		t.Errorf("final.Result = %q, want %q", final.Result, "pong")
 	}
+	if final.CostUSD == nil {
+		t.Error("final.CostUSD is nil after a successful dispatch, want the ledger's recorded cost")
+	} else if *final.CostUSD != 0.0230845 {
+		t.Errorf("final.CostUSD = %v, want %v (happy_path fixture's total_cost_usd)", *final.CostUSD, 0.0230845)
+	}
+
+	// A never-dispatched job must not report a cost at all — nil, not 0 —
+	// so a client can tell "hasn't run" apart from "ran for free."
+	fresh := decode[JobResponse](t, postJSON(t, srv.URL+"/api/jobs", CreateJobRequest{
+		Kind: "research", Prompt: "never dispatched",
+	}))
+	got := decode[JobResponse](t, mustGet(t, srv.URL+"/api/jobs/"+fresh.ID))
+	if got.CostUSD != nil {
+		t.Errorf("CostUSD for a never-dispatched job = %v, want nil", *got.CostUSD)
+	}
+}
+
+func mustGet(t *testing.T, url string) *http.Response {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
 }
 
 func TestDispatchJob_NotFound(t *testing.T) {
