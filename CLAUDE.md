@@ -65,3 +65,11 @@ Not yet done, left for a later Phase 5 slice:
 - Reserved blocks / preferred windows aren't yet settable from the CLI, only via `PUT /api/scheduler/config` directly — `tokenwarden scheduler config set` only covers `--enabled`/`--aggressiveness`/`--max-budget-usd`.
 
 See `docs/REQUIREMENTS.md` §"Implementation phases" via the plan history, or just check what packages exist under `internal/`.
+
+### Resume-here note (Phase 5 slice 1 handoff)
+
+Everything above is merged into the working tree and pushed to `claude/scheduler-dispatch-loop-k9m2dm`, open as [PR #13](https://github.com/garrett928/tokenwarden/pull/13) (draft). `go build ./...`, `go vet ./...`, `golangci-lint run ./...`, and `go test ./... -race` all pass clean locally as of that push.
+
+**Blocked on:** CI is red on all 10 jobs (`test` × 3 OSes, `lint`, `vulncheck`, `cross-compile` × 5 targets) on that PR, including after a `rerun_failed_jobs` retry. Every job fails in 2-3 seconds with no retrievable logs (job-log API 404s; the blob-storage log URL is also unreachable) — too fast for even `actions/checkout` to run, and `main`'s CI on the same workflow file is green on every recent run. This pattern points at an Actions billing/runner-provisioning issue at the repo/org level (private repo, this PR adds several more macOS/Windows matrix jobs' worth of runner usage) rather than anything in the diff. Posted as a comment on PR #13 asking the repo owner to check Settings → Actions / billing. **Next session should check whether that got resolved and CI now runs before doing anything else** — if it's still failing instantly with no logs, that's still not a code problem to chase.
+
+Once CI is green and the PR is reviewed/merged, the next Phase 5 slice is whichever of the "not yet done" items above the user wants next — none of them block on each other, so pick by priority.
