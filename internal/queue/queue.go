@@ -113,23 +113,44 @@ func (q *Queue) PromoteReady(ctx context.Context) (int, error) {
 	return promoted, errors.Join(errs...)
 }
 
-// NextRunnable returns the highest-priority Queued job whose EarliestAt (if
-// any) has passed as of now. Jobs are already ordered by priority (highest
-// first) then creation time by the store, so this just walks that order and
-// applies the EarliestAt gate. ok is false when nothing is eligible yet.
-func (q *Queue) NextRunnable(ctx context.Context, now time.Time) (job store.Job, ok bool, err error) {
-	candidates, err := q.store.ListJobs(ctx, store.ListFilter{Statuses: []store.Status{store.StatusQueued}})
+// Candidates returns every Queued or PausedBudget job whose EarliestAt (if
+// any) has passed as of now, in the store's existing priority order
+// (highest first, then oldest-created first). PausedBudget jobs are
+// included alongside Queued ones because MarkRunning already accepts both
+// as a dispatch source (a budget-capped job resuming next window is just as
+// runnable as a fresh one) — see §6.4 strategy 1. The scheduler walks this
+// full list, rather than just the first entry, so a top candidate that
+// doesn't fit remaining headroom can be deferred in favor of the next-best
+// one (§6.2 step 7).
+func (q *Queue) Candidates(ctx context.Context, now time.Time) ([]store.Job, error) {
+	jobs, err := q.store.ListJobs(ctx, store.ListFilter{Statuses: []store.Status{store.StatusQueued, store.StatusPausedBudget}})
 	if err != nil {
-		return store.Job{}, false, fmt.Errorf("listing queued jobs: %w", err)
+		return nil, fmt.Errorf("listing queued jobs: %w", err)
 	}
 
-	for _, j := range candidates {
+	var runnable []store.Job
+	for _, j := range jobs {
 		if j.EarliestAt != nil && j.EarliestAt.After(now) {
 			continue
 		}
-		return j, true, nil
+		runnable = append(runnable, j)
 	}
-	return store.Job{}, false, nil
+	return runnable, nil
+}
+
+// NextRunnable returns Candidates' first entry — the single
+// highest-priority runnable job — for callers (the API's manual dispatch
+// trigger, tests) that don't need the full list. ok is false when nothing
+// is eligible yet.
+func (q *Queue) NextRunnable(ctx context.Context, now time.Time) (job store.Job, ok bool, err error) {
+	candidates, err := q.Candidates(ctx, now)
+	if err != nil {
+		return store.Job{}, false, err
+	}
+	if len(candidates) == 0 {
+		return store.Job{}, false, nil
+	}
+	return candidates[0], true, nil
 }
 
 // Cancel transitions a non-terminal job to Cancelled. Cancelling a job
@@ -195,6 +216,22 @@ func (q *Queue) Finish(ctx context.Context, id string, outcome FinishOutcome) er
 		}
 	}
 	return q.store.UpdateStatus(ctx, id, outcome.Status, outcome.FailureReason)
+}
+
+// CapBudget sets a job's MaxBudgetUSD so its next dispatch stops at usdCap
+// and (when the job is Resumable) can be continued later via --resume —
+// REQUIREMENTS.md §6.4 strategy 1, budget-capped continuation. Like Cancel
+// and DeferOversized, capping an already-terminal job is an error rather
+// than a silent no-op.
+func (q *Queue) CapBudget(ctx context.Context, id string, usdCap float64) error {
+	j, err := q.store.GetJob(ctx, id)
+	if err != nil {
+		return err
+	}
+	if j.Status.Terminal() {
+		return fmt.Errorf("%w: job %s is already %s", ErrAlreadyTerminal, id, j.Status)
+	}
+	return q.store.UpdateJobMaxBudgetUSD(ctx, id, &usdCap)
 }
 
 // DeferOversized transitions a non-terminal job to DeferredOversized,

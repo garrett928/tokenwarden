@@ -175,6 +175,20 @@ func (s *Store) UpdateSessionID(ctx context.Context, id, sessionID string) error
 	return checkRowsAffected(res, id)
 }
 
+// UpdateJobMaxBudgetUSD sets a job's per-dispatch spend cap — used both at
+// job creation (via CreateJob) and by the scheduler's §6.4 strategy 1
+// (budget-capped continuation), which caps a resumable job's next dispatch
+// to remaining 5-hour headroom rather than letting it overshoot.
+func (s *Store) UpdateJobMaxBudgetUSD(ctx context.Context, id string, maxBudgetUSD *float64) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE jobs SET max_budget_usd = ?, updated_at = ? WHERE id = ?
+	`, maxBudgetUSD, time.Now().UTC().Unix(), id)
+	if err != nil {
+		return fmt.Errorf("updating max budget for job %s: %w", id, err)
+	}
+	return checkRowsAffected(res, id)
+}
+
 // UpdateResult records the runner's final text output for a job — see
 // Job.Result's doc comment for why this is set on both success and failure.
 func (s *Store) UpdateResult(ctx context.Context, id, resultText string) error {

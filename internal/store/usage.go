@@ -96,6 +96,47 @@ func (s *Store) RecordUsageIfNew(ctx context.Context, e UsageEntry) (inserted bo
 	return n > 0, nil
 }
 
+// JobUsageTotal is one completed job's summed usage — the per-job
+// granularity internal/budget's cost predictor needs (REQUIREMENTS.md
+// §6.4: "a per-job cost predictor to decide a job is oversized").
+type JobUsageTotal struct {
+	JobID   string
+	Tokens  int
+	CostUSD float64
+}
+
+// CompletedJobUsageTotals returns one JobUsageTotal per Succeeded or Failed
+// job of the given kind that has at least one usage_entries row, summing
+// across models when a job's usage was recorded per-model (RecordResult).
+// Running/Queued/etc. jobs are excluded — only a finished job's usage is a
+// real observation of what that kind of work costs.
+func (s *Store) CompletedJobUsageTotals(ctx context.Context, kind JobKind) ([]JobUsageTotal, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT u.job_id, SUM(u.input_tokens + u.output_tokens), SUM(u.cost_usd)
+		FROM usage_entries u
+		JOIN jobs j ON j.id = u.job_id
+		WHERE j.kind = ? AND j.status IN (?, ?)
+		GROUP BY u.job_id
+	`, string(kind), string(StatusSucceeded), string(StatusFailed))
+	if err != nil {
+		return nil, fmt.Errorf("summing completed job usage for kind %s: %w", kind, err)
+	}
+	defer rows.Close()
+
+	var totals []JobUsageTotal
+	for rows.Next() {
+		var t JobUsageTotal
+		if err := rows.Scan(&t.JobID, &t.Tokens, &t.CostUSD); err != nil {
+			return nil, fmt.Errorf("scanning job usage total: %w", err)
+		}
+		totals = append(totals, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating job usage totals: %w", err)
+	}
+	return totals, nil
+}
+
 // ListUsageSince returns every usage entry recorded at or after since,
 // ordered oldest first.
 func (s *Store) ListUsageSince(ctx context.Context, since time.Time) ([]UsageEntry, error) {
