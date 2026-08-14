@@ -268,6 +268,83 @@ func TestNextRunnable_NoneEligible(t *testing.T) {
 	}
 }
 
+func TestCandidates_IncludesPausedBudget(t *testing.T) {
+	q, s := newTestQueue(t)
+	ctx := context.Background()
+
+	paused := minimalJob()
+	paused.Priority = 5
+	pausedJob, err := q.Enqueue(ctx, paused)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, pausedJob.ID, store.StatusPausedBudget, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh := minimalJob()
+	fresh.Priority = 1
+	freshJob, err := q.Enqueue(ctx, fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := q.Candidates(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("Candidates() error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Candidates() returned %d jobs, want 2 (got %+v)", len(got), got)
+	}
+	// Higher priority (the paused_budget job) sorts first, same as any other
+	// runnable job — a resumable job's cap-and-continue is just as eligible
+	// as a fresh dispatch (§6.4 strategy 1).
+	if got[0].ID != pausedJob.ID {
+		t.Errorf("Candidates()[0] = %s, want the higher-priority paused_budget job %s", got[0].ID, pausedJob.ID)
+	}
+	if got[1].ID != freshJob.ID {
+		t.Errorf("Candidates()[1] = %s, want %s", got[1].ID, freshJob.ID)
+	}
+}
+
+func TestCapBudget_SetsMaxBudget(t *testing.T) {
+	q, _ := newTestQueue(t)
+	ctx := context.Background()
+
+	j, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CapBudget(ctx, j.ID, 1.5); err != nil {
+		t.Fatalf("CapBudget() error: %v", err)
+	}
+
+	got, err := q.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MaxBudgetUSD == nil || *got.MaxBudgetUSD != 1.5 {
+		t.Errorf("MaxBudgetUSD = %v, want 1.5", got.MaxBudgetUSD)
+	}
+}
+
+func TestCapBudget_AlreadyTerminal_Errors(t *testing.T) {
+	q, s := newTestQueue(t)
+	ctx := context.Background()
+
+	j, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, j.ID, store.StatusSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.CapBudget(ctx, j.ID, 1.5); !errors.Is(err, ErrAlreadyTerminal) {
+		t.Errorf("CapBudget() error = %v, want ErrAlreadyTerminal", err)
+	}
+}
+
 func TestCancel_FromQueued(t *testing.T) {
 	q, _ := newTestQueue(t)
 	ctx := context.Background()

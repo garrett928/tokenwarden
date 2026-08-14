@@ -1,9 +1,11 @@
 package scheduler
 
 import (
+	"math"
 	"testing"
 	"time"
 
+	"tokenwarden/internal/budget"
 	"tokenwarden/internal/store"
 )
 
@@ -92,5 +94,87 @@ func TestDecide_AllClear_Dispatches(t *testing.T) {
 	got := Decide(cfg, usage, now)
 	if got.Action != ActionDispatch {
 		t.Errorf("Action = %v, want ActionDispatch", got.Action)
+	}
+}
+
+// fitCfg is 80% aggressiveness -> a 78% five-hour ceiling (safetyMarginPercent).
+var fitCfg = store.SchedulerConfig{Enabled: true, Aggressiveness: 80}
+
+func TestFitJob_ColdStart_InsufficientPrediction_Dispatches(t *testing.T) {
+	job := store.Job{Resumable: false}
+	prediction := budget.CostPrediction{Insufficient: true}
+	cal := budget.CalibrationEstimate{TokensPerPercent: 1000}
+
+	got := FitJob(job, prediction, cal, fitCfg, 70)
+	if got.Action != FitDispatch {
+		t.Errorf("Action = %v, want FitDispatch (no cost prediction yet, don't block on a guess)", got.Action)
+	}
+}
+
+func TestFitJob_ColdStart_InsufficientCalibration_Dispatches(t *testing.T) {
+	job := store.Job{Resumable: false}
+	prediction := budget.CostPrediction{Tokens: 10000, CostUSD: 2, Samples: 5}
+	cal := budget.CalibrationEstimate{Insufficient: true}
+
+	got := FitJob(job, prediction, cal, fitCfg, 70)
+	if got.Action != FitDispatch {
+		t.Errorf("Action = %v, want FitDispatch (no calibration yet, can't convert tokens to %% headroom)", got.Action)
+	}
+}
+
+func TestFitJob_PredictedCostFitsHeadroom_Dispatches(t *testing.T) {
+	job := store.Job{Resumable: false}
+	// 5000 tokens / 1000 tokens-per-percent = 5%, well inside the 8%
+	// remaining headroom (78% ceiling - 70% used).
+	prediction := budget.CostPrediction{Tokens: 5000, CostUSD: 1, Samples: 5}
+	cal := budget.CalibrationEstimate{TokensPerPercent: 1000, Samples: 5}
+
+	got := FitJob(job, prediction, cal, fitCfg, 70)
+	if got.Action != FitDispatch {
+		t.Errorf("Action = %v, want FitDispatch (predicted 5%% fits 8%% remaining headroom)", got.Action)
+	}
+}
+
+func TestFitJob_OversizedAndNotResumable_Defers(t *testing.T) {
+	job := store.Job{Resumable: false}
+	// 10000 tokens / 1000 = 10%, exceeds the 8% remaining headroom.
+	prediction := budget.CostPrediction{Tokens: 10000, CostUSD: 2, Samples: 5}
+	cal := budget.CalibrationEstimate{TokensPerPercent: 1000, Samples: 5}
+
+	got := FitJob(job, prediction, cal, fitCfg, 70)
+	if got.Action != FitDefer {
+		t.Errorf("Action = %v, want FitDefer (oversized, not resumable, no fitting strategy applies)", got.Action)
+	}
+	if got.Reason == "" {
+		t.Error("Reason is empty, want an explanation for the deferral")
+	}
+}
+
+func TestFitJob_OversizedAndResumable_CapsBudget(t *testing.T) {
+	job := store.Job{Resumable: true}
+	// 10000 tokens / 1000 = 10%, exceeds the 8% remaining headroom.
+	// costPerToken = 2/10000 = 0.0002; remaining 8% * 1000 tokens/% = 8000
+	// tokens; budget cap = 8000 * 0.0002 = 1.6.
+	prediction := budget.CostPrediction{Tokens: 10000, CostUSD: 2, Samples: 5}
+	cal := budget.CalibrationEstimate{TokensPerPercent: 1000, Samples: 5}
+
+	got := FitJob(job, prediction, cal, fitCfg, 70)
+	if got.Action != FitCapBudget {
+		t.Fatalf("Action = %v, want FitCapBudget (oversized but resumable)", got.Action)
+	}
+	if math.Abs(got.BudgetCapUSD-1.6) > 1e-9 {
+		t.Errorf("BudgetCapUSD = %v, want ~1.6", got.BudgetCapUSD)
+	}
+}
+
+func TestFitJob_OversizedResumableNoHeadroomLeft_Defers(t *testing.T) {
+	job := store.Job{Resumable: true}
+	prediction := budget.CostPrediction{Tokens: 10000, CostUSD: 2, Samples: 5}
+	cal := budget.CalibrationEstimate{TokensPerPercent: 1000, Samples: 5}
+
+	// Already at the 78% ceiling -> zero remaining headroom to cap against.
+	got := FitJob(job, prediction, cal, fitCfg, 78)
+	if got.Action != FitDefer {
+		t.Errorf("Action = %v, want FitDefer (no headroom left even though resumable)", got.Action)
 	}
 }

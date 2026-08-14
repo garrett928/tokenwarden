@@ -132,11 +132,33 @@ func (d *Dispatcher) RunJob(ctx context.Context, job store.Job) error {
 	}
 
 	var finishErr error
-	if result.IsError {
+	switch {
+	case isBudgetCutoff(job, result):
+		// --max-budget-usd stopped the run mid-task rather than the model
+		// finishing on its own — StatusPausedBudget (not Failed) so
+		// queue.MarkRunning's existing "Queued or PausedBudget" acceptance
+		// lets a later dispatch --resume it (§6.4 strategy 1), regardless of
+		// whether the CLI happened to also report IsError for the cutoff.
+		finishErr = d.queue.Finish(ctx, job.ID, queue.FinishOutcome{Status: store.StatusPausedBudget, SessionID: result.SessionID, Result: result.Result})
+	case result.IsError:
 		finishErr = d.queue.Finish(ctx, job.ID, queue.FinishOutcome{Status: store.StatusFailed, FailureReason: result.Result, SessionID: result.SessionID, Result: result.Result})
-	} else {
+	default:
 		finishErr = d.queue.Finish(ctx, job.ID, queue.FinishOutcome{Status: store.StatusSucceeded, SessionID: result.SessionID, Result: result.Result})
 	}
 
 	return errors.Join(recordErr, finishErr)
+}
+
+// isBudgetCutoff reports whether result looks like a run --max-budget-usd
+// cut short rather than one that finished (successfully or not) on its
+// own. There is no verified stop_reason value for a budget cutoff (unlike
+// end_turn — SPIKE-001 never exercised --max-budget-usd), so this is
+// deliberately based on data BuildArgs and the runner already produce
+// rather than a guessed enum string: a capped run cannot spend more than
+// its cap, so reaching or exceeding it with a resumable session in hand is
+// the cutoff signature. A run that finishes naturally exactly at the cap
+// is indistinguishable from this and is treated as a cutoff too — the
+// worse case is an unnecessary --resume, not lost work.
+func isBudgetCutoff(job store.Job, result runner.Result) bool {
+	return job.MaxBudgetUSD != nil && result.SessionID != "" && result.TotalCostUSD >= *job.MaxBudgetUSD
 }

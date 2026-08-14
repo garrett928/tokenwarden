@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 )
@@ -32,6 +33,74 @@ func TestRecordUsage_RespectsExplicitRecordedAt(t *testing.T) {
 	}
 	if !got.RecordedAt.Equal(explicit) {
 		t.Errorf("RecordedAt = %v, want %v", got.RecordedAt, explicit)
+	}
+}
+
+func TestCompletedJobUsageTotals_SumsPerJobAndScopesByKindAndStatus(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	research, err := s.CreateJob(ctx, Job{Kind: JobKindResearch, Prompt: "research it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, research.ID, StatusSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Two usage rows (e.g. two models) for the same job — must sum into one
+	// JobUsageTotal, not two.
+	if _, err := s.RecordUsage(ctx, UsageEntry{JobID: research.ID, Model: "haiku", InputTokens: 100, OutputTokens: 20, CostUSD: 0.1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordUsage(ctx, UsageEntry{JobID: research.ID, Model: "sonnet", InputTokens: 200, OutputTokens: 30, CostUSD: 0.2}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, err := s.CreateJob(ctx, Job{Kind: JobKindCode, Prompt: "code it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, code.ID, StatusFailed, "oops"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordUsage(ctx, UsageEntry{JobID: code.ID, InputTokens: 500, CostUSD: 1.0}); err != nil {
+		t.Fatal(err)
+	}
+
+	stillRunning, err := s.CreateJob(ctx, Job{Kind: JobKindResearch, Prompt: "not done yet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, stillRunning.ID, StatusRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordUsage(ctx, UsageEntry{JobID: stillRunning.ID, InputTokens: 9999, CostUSD: 99}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.CompletedJobUsageTotals(ctx, JobKindResearch)
+	if err != nil {
+		t.Fatalf("CompletedJobUsageTotals() error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("CompletedJobUsageTotals(research) returned %d totals, want 1 (running job excluded, code job wrong kind)", len(got))
+	}
+	if got[0].JobID != research.ID {
+		t.Errorf("JobID = %s, want %s", got[0].JobID, research.ID)
+	}
+	if got[0].Tokens != 350 {
+		t.Errorf("Tokens = %d, want 350 (100+20+200+30, summed across both model rows)", got[0].Tokens)
+	}
+	if math.Abs(got[0].CostUSD-0.3) > 1e-9 {
+		t.Errorf("CostUSD = %v, want ~0.3", got[0].CostUSD)
+	}
+
+	gotCode, err := s.CompletedJobUsageTotals(ctx, JobKindCode)
+	if err != nil {
+		t.Fatalf("CompletedJobUsageTotals() error: %v", err)
+	}
+	if len(gotCode) != 1 || gotCode[0].JobID != code.ID {
+		t.Fatalf("CompletedJobUsageTotals(code) = %+v, want just the failed code job", gotCode)
 	}
 }
 

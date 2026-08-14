@@ -38,21 +38,31 @@ func New(s *store.Store, q *queue.Queue, d *dispatch.Dispatcher, l *budget.Ledge
 // TickResult reports what one Tick call did — used by tests and by Run's
 // logging.
 type TickResult struct {
-	Decision    Decision
-	Usage       UsageState
-	Dispatched  bool
-	JobID       string
-	DispatchErr error
+	Decision   Decision
+	Usage      UsageState
+	Dispatched bool
+	// JobID and DispatchErr describe the job actually dispatched this
+	// tick, if any — the last candidate FitJob approved (as-is or capped),
+	// not necessarily Candidates' first entry, since earlier ones may have
+	// been deferred (see DeferredJobIDs).
+	JobID        string
+	DispatchErr  error
+	BudgetCapUSD float64 // set when JobID was dispatched via FitCapBudget (§6.4 strategy 1)
+	// DeferredJobIDs lists candidates this tick deferred as oversized
+	// (§6.4 strategy 4) before finding one that fit — empty on a tick
+	// where the first candidate dispatched cleanly.
+	DeferredJobIDs []string
 }
 
 // Tick runs one iteration of REQUIREMENTS.md §6.2's dispatch loop: load
 // config, refresh usage state (step 1), apply the admission checks (steps
-// 2-4), and if nothing holds it back, dispatch the highest-priority
-// runnable job (steps 7-8). It dispatches synchronously — Tick doesn't
-// return until the job it started finishes. That's deliberate for this
-// slice: REQUIREMENTS.md §10 open question 2 (concurrency) is
-// unresolved, so nothing here runs more than one job at a time, matching
-// the cold-start policy in §10 open question 3.
+// 2-4), and if nothing holds it back, walk runnable candidates in priority
+// order (step 7) fitting each against remaining five-hour headroom (§6.4)
+// until one dispatches (step 8) or all of them defer. It dispatches
+// synchronously — Tick doesn't return until the job it started finishes.
+// That's deliberate for this slice: REQUIREMENTS.md §10 open question 2
+// (concurrency) is unresolved, so nothing here runs more than one job at a
+// time.
 func (e *Engine) Tick(ctx context.Context) (TickResult, error) {
 	cfg, err := e.store.GetSchedulerConfig(ctx)
 	if err != nil {
@@ -70,19 +80,59 @@ func (e *Engine) Tick(ctx context.Context) (TickResult, error) {
 		return TickResult{Decision: decision, Usage: usage}, nil
 	}
 
-	job, ok, err := e.queue.NextRunnable(ctx, now)
+	candidates, err := e.queue.Candidates(ctx, now)
 	if err != nil {
-		return TickResult{}, fmt.Errorf("finding next runnable job: %w", err)
+		return TickResult{}, fmt.Errorf("finding runnable candidates: %w", err)
 	}
-	if !ok {
-		return TickResult{Decision: decision, Usage: usage}, nil
+	result := TickResult{Decision: decision, Usage: usage}
+	if len(candidates) == 0 {
+		return result, nil
 	}
 
-	dispatchErr := e.dispatch.DispatchOne(ctx, job.ID)
-	result := TickResult{Decision: decision, Usage: usage, Dispatched: true, JobID: job.ID, DispatchErr: dispatchErr}
-	if dispatchErr != nil && !errors.Is(dispatchErr, dispatch.ErrHalted) {
-		return result, fmt.Errorf("dispatching job %s: %w", job.ID, dispatchErr)
+	// §10 open question 3: the fitting check only ever applies once
+	// five-hour calibration itself is trustworthy. Fetched once per tick —
+	// it doesn't change while candidates are being walked.
+	fiveHourCal, err := e.ledger.CalibrateFiveHour(ctx)
+	if err != nil {
+		return TickResult{}, fmt.Errorf("calibrating five-hour window: %w", err)
 	}
+
+	predictions := make(map[store.JobKind]budget.CostPrediction)
+	for _, job := range candidates {
+		prediction, ok := predictions[job.Kind]
+		if !ok {
+			prediction, err = e.ledger.PredictJobCost(ctx, job.Kind)
+			if err != nil {
+				return TickResult{}, fmt.Errorf("predicting cost for job %s (kind %s): %w", job.ID, job.Kind, err)
+			}
+			predictions[job.Kind] = prediction
+		}
+
+		switch fit := FitJob(job, prediction, fiveHourCal, cfg, usage.FiveHourUsedPercent); fit.Action {
+		case FitDefer:
+			if err := e.queue.DeferOversized(ctx, job.ID, fit.Reason); err != nil {
+				return TickResult{}, fmt.Errorf("deferring oversized job %s: %w", job.ID, err)
+			}
+			result.DeferredJobIDs = append(result.DeferredJobIDs, job.ID)
+			continue // try the next-best candidate, §6.2 step 7
+		case FitCapBudget:
+			if err := e.queue.CapBudget(ctx, job.ID, fit.BudgetCapUSD); err != nil {
+				return TickResult{}, fmt.Errorf("capping budget for job %s: %w", job.ID, err)
+			}
+			result.BudgetCapUSD = fit.BudgetCapUSD
+		}
+
+		dispatchErr := e.dispatch.DispatchOne(ctx, job.ID)
+		result.Dispatched = true
+		result.JobID = job.ID
+		result.DispatchErr = dispatchErr
+		if dispatchErr != nil && !errors.Is(dispatchErr, dispatch.ErrHalted) {
+			return result, fmt.Errorf("dispatching job %s: %w", job.ID, dispatchErr)
+		}
+		return result, nil
+	}
+
+	// Every candidate this tick was oversized and deferred.
 	return result, nil
 }
 

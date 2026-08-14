@@ -173,6 +173,81 @@ func TestDispatchOne_ErrorResult(t *testing.T) {
 	}
 }
 
+func TestDispatchOne_BudgetCutoff_PausesForResume(t *testing.T) {
+	t.Setenv("FAKECLAUDE_FIXTURE", "budget_capped")
+	d := newTestDispatcher(t)
+	ctx := context.Background()
+
+	budgetCap := 0.05 // fixture's total_cost_usd reaches this exactly
+	created, err := d.queue.Enqueue(ctx, store.Job{Kind: store.JobKindResearch, Prompt: "do a big thing", MaxBudgetUSD: &budgetCap, Resumable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.DispatchOne(ctx, created.ID); err != nil {
+		t.Fatalf("DispatchOne() error: %v", err)
+	}
+
+	got, err := d.queue.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusPausedBudget {
+		t.Errorf("Status = %q, want %q (cost reached the cap)", got.Status, store.StatusPausedBudget)
+	}
+	if got.SessionID == "" {
+		t.Error("SessionID is empty, want the fixture's session id recorded so a later dispatch can --resume")
+	}
+}
+
+func TestDispatchOne_BudgetCutoff_ErrorResult_StillPauses(t *testing.T) {
+	t.Setenv("FAKECLAUDE_FIXTURE", "budget_capped_error")
+	d := newTestDispatcher(t)
+	ctx := context.Background()
+
+	budgetCap := 0.05
+	created, err := d.queue.Enqueue(ctx, store.Job{Kind: store.JobKindResearch, Prompt: "do a big thing", MaxBudgetUSD: &budgetCap, Resumable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.DispatchOne(ctx, created.ID); err != nil {
+		t.Fatalf("DispatchOne() error: %v", err)
+	}
+
+	got, err := d.queue.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusPausedBudget {
+		t.Errorf("Status = %q, want %q (a budget cutoff pauses for resume even when the CLI also reports is_error)", got.Status, store.StatusPausedBudget)
+	}
+}
+
+func TestDispatchOne_UnderBudget_SucceedsNormally(t *testing.T) {
+	t.Setenv("FAKECLAUDE_FIXTURE", "happy_path")
+	d := newTestDispatcher(t)
+	ctx := context.Background()
+
+	generousCap := 5.0 // well above happy_path's 0.0230845 total_cost_usd
+	created, err := d.queue.Enqueue(ctx, store.Job{Kind: store.JobKindResearch, Prompt: "say pong", MaxBudgetUSD: &generousCap})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.DispatchOne(ctx, created.ID); err != nil {
+		t.Fatalf("DispatchOne() error: %v", err)
+	}
+
+	got, err := d.queue.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusSucceeded {
+		t.Errorf("Status = %q, want %q (cost stayed well under the cap, this isn't a cutoff)", got.Status, store.StatusSucceeded)
+	}
+}
+
 func TestHalt_CancelsInFlightRun(t *testing.T) {
 	d := newTestDispatcher(t)
 
