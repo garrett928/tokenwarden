@@ -42,27 +42,45 @@ tasks:
     cmds:
       - rm -rf {{.BIN_DIR}}
 
+  ui:check-node:
+    internal: true
+    dir: ui
+    silent: true
+    cmds:
+      - |
+        required=$(tr -d '[:space:]' < .nvmrc)
+        current=$(node --version | sed 's/^v//' | cut -d. -f1)
+        if [ "$current" -lt "$required" ]; then
+          echo "error: ui/ needs Node $required+ (see ui/.nvmrc); active node is $(node --version)." >&2
+          echo "       If you use nvm: run 'nvm use' inside ui/, or 'nvm install' if it's not installed yet." >&2
+          exit 1
+        fi
+
   ui:install:
     desc: Install UI dependencies
     dir: ui
+    deps: [ui:check-node]
     cmds:
       - npm install
 
   ui:dev:
     desc: Run the UI dev server (proxies /api to a running daemon on 127.0.0.1:7842)
     dir: ui
+    deps: [ui:check-node]
     cmds:
       - npm run dev
 
   ui:build:
     desc: Build the UI for production (output ui/dist, served by the daemon if present)
     dir: ui
+    deps: [ui:check-node]
     cmds:
       - npm run build
 
   ui:lint:
     desc: Lint/typecheck the UI
     dir: ui
+    deps: [ui:check-node]
     cmds:
       - npm run lint
 
@@ -71,3 +89,17 @@ tasks:
     cmds:
       - task: build
       - task: ui:build
+
+  desktop:dev:
+    desc: Run the native desktop shell against a freshly built daemon (requires Node + a C toolchain — see desktop/go.mod, kept isolated from the root module on purpose)
+    deps: [build]
+    dir: desktop
+    cmds:
+      - go run .
+
+  desktop:build:
+    desc: Build a real .app bundle for the desktop shell (macOS host required for a macOS build)
+    deps: [build]
+    dir: desktop
+    cmds:
+      - wails3 package
