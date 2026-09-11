@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "0.1.0"
+	},
+	"info": {
+		"0000": {
+			"ProductVersion": "0.1.0",
+			"CompanyName": "tokenwarden",
+			"FileDescription": "Budget-aware scheduler for Claude Code work",
+			"LegalCopyright": "(c) 2026, Garrett Hart",
+			"ProductName": "tokenwarden",
+			"Comments": "A thin native shell around the tokenwardend daemon"
+		}
+	}
+}

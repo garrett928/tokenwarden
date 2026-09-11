@@ -15,7 +15,7 @@ A Claude Pro/Max subscription is metered by two rolling windows — a 5-hour ses
 
 tokenwarden is a cross-platform desktop app that holds a queue of real work and paces it against your own Claude subscription, so weekly capacity lands as close to fully used as you choose — while reserving headroom for the hours you want Claude for yourself.
 
-> **Status: early alpha.** The daemon, CLI, and a basic local web UI all work end to end — you can queue jobs, dispatch them against your real `claude` CLI, and watch usage/scheduler state in a browser. The budget-aware dispatch loop runs but stays a no-op until you opt in. Not yet built: the native desktop shell, the active (PTY sentinel) capture path, and the usage timeline/breakdown views. See [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) and [`CLAUDE.md`](CLAUDE.md#current-phase) for exactly what's done.
+> **Status: early alpha.** The daemon, CLI, a basic local web UI, and a native desktop shell (macOS) all work end to end — you can queue jobs, dispatch them against your real `claude` CLI, and watch usage/scheduler state in a browser or in a real window with a system tray. The budget-aware dispatch loop runs but stays a no-op until you opt in. Not yet built: Windows/Linux desktop packaging, the active (PTY sentinel) capture path, and the usage timeline/breakdown views. See [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) and [`CLAUDE.md`](CLAUDE.md#current-phase) for exactly what's done.
 
 ---
 
@@ -127,6 +127,22 @@ task run                # (re)start the daemon — it picks up ui/dist automatic
 ```
 
 If `ui/dist` doesn't exist, the daemon just runs API-only — building the UI is entirely optional.
+
+### 5. Run the native desktop app (macOS)
+
+A thin native window and system tray around the daemon — see `desktop/` and [`CLAUDE.md`](CLAUDE.md) for the design. It's a separate Go module (Wails v3 needs cgo, which the daemon/CLI/probe deliberately don't) with its own toolchain requirement: [Wails' platform prerequisites](https://v3.wails.io/getting-started/installation/) (Xcode command line tools on macOS) plus the `wails3` CLI:
+
+```bash
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
+```
+
+```bash
+task ui:build          # the shell points its window at the daemon's UI, so build it first
+task desktop:build     # produces desktop/bin/desktop.app
+open desktop/bin/desktop.app
+```
+
+Closing the window hides it rather than quitting (the scheduler needs to keep dispatching unattended) — use the tray icon's Quit to actually stop it, which also stops the daemon it spawned. `task desktop:dev` (`go run .` in `desktop/`) is faster for iterating on the shell itself. Windows/Linux builds aren't wired up yet — see [`CLAUDE.md`](CLAUDE.md) for what's left.
 
 ## Documentation
 
