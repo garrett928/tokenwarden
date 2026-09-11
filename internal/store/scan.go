@@ -11,7 +11,7 @@ const jobSelectColumns = `SELECT
 	id, kind, prompt, workspace, model, effort,
 	attachments, steps, resumable, priority,
 	earliest_at, deadline_at, max_budget_usd, depends_on,
-	session_id, status, failure_reason, result_text, created_at, updated_at,
+	session_id, parent_job_id, status, failure_reason, result_text, created_at, updated_at,
 	permission_mode, allowed_tools, add_dirs, json_schema, freeform_worktree`
 
 // rowScanner is satisfied by both *sql.Row and *sql.Rows, letting scanJob
@@ -35,7 +35,7 @@ func scanJob(row rowScanner) (Job, error) {
 		&j.ID, &kind, &j.Prompt, &j.Workspace, &j.Model, &j.Effort,
 		&attachmentsJSON, &stepsJSON, &j.Resumable, &j.Priority,
 		&earliestAt, &deadlineAt, &maxBudgetUSD, &dependsJSON,
-		&j.SessionID, &status, &j.FailureReason, &j.Result, &createdAtUnix, &updatedAtUnix,
+		&j.SessionID, &j.ParentJobID, &status, &j.FailureReason, &j.Result, &createdAtUnix, &updatedAtUnix,
 		&j.PermissionMode, &allowedToolsJSON, &addDirsJSON, &j.JSONSchema, &j.FreeformWorktree,
 	); err != nil {
 		return Job{}, err

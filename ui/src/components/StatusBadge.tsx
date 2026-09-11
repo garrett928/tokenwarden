@@ -4,6 +4,7 @@ const COLORS: Record<string, string> = {
   running: 'var(--accent)',
   paused_budget: 'var(--warning)',
   deferred_oversized: 'var(--warning)',
+  promoted: 'var(--success)',
   succeeded: 'var(--success)',
   failed: 'var(--danger)',
   cancelled: 'var(--fg-muted)',

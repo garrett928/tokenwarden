@@ -31,6 +31,11 @@ var ErrAlreadyTerminal = errors.New("job already in a terminal state")
 // that can transition to Running.
 var ErrNotRunnable = errors.New("job is not in a dispatchable state")
 
+// ErrNoSteps is returned by PromoteSteps when the job declares no Steps to
+// promote — §6.4 strategy 2 doesn't apply to it, and inventing split points
+// is strategy 3's job, not this one's.
+var ErrNoSteps = errors.New("job has no steps to promote")
+
 // Queue wraps a *store.Store with job lifecycle rules.
 type Queue struct {
 	store *store.Store
@@ -102,6 +107,18 @@ func (q *Queue) PromoteReady(ctx context.Context) (int, error) {
 		status, reason := computeStatus(deps)
 		if status == store.StatusBlocked {
 			continue // still waiting, nothing to do
+		}
+		// A promoted step chain (§6.4 strategy 2) shares one session across
+		// its children: the step that just succeeded hands its session to the
+		// next one, so the next dispatch continues the same conversation via
+		// --resume rather than starting cold. Written before the status
+		// change so a child is never observably Queued without the session it
+		// is supposed to inherit.
+		if status == store.StatusQueued && b.ParentJobID != "" && len(deps) == 1 && deps[0].SessionID != "" {
+			if err := q.store.UpdateSessionID(ctx, b.ID, deps[0].SessionID); err != nil {
+				errs = append(errs, fmt.Errorf("job %s: inheriting session from %s: %w", b.ID, deps[0].ID, err))
+				continue
+			}
 		}
 		if err := q.store.UpdateStatus(ctx, b.ID, status, reason); err != nil {
 			errs = append(errs, fmt.Errorf("job %s: %w", b.ID, err))
@@ -249,6 +266,223 @@ func (q *Queue) DeferOversized(ctx context.Context, id, reason string) error {
 	return q.store.UpdateStatus(ctx, id, store.StatusDeferredOversized, reason)
 }
 
+// PromoteSteps implements REQUIREMENTS.md §6.4 strategy 2: it turns job's
+// declared Steps into a chain of child jobs — child 0 runnable immediately,
+// each subsequent child DependsOn the previous one, so only one step is
+// ever runnable at a time and PromoteReady's existing dependency-sweep
+// naturally advances the chain as each step succeeds. Every child inherits
+// the parent's execution settings *and* its safety envelope — kind, model,
+// effort, workspace, priority, tool allowlist, permission mode, extra
+// directories, worktree flag, per-job budget cap, attachments, JSON schema
+// and deadline — because an empty AllowedTools or PermissionMode is not
+// "inherit the parent's": internal/runner/safety.go reads it as "apply the
+// kind's default", which for a code job adds Bash/Write and for a freeform
+// job auto-approves permissions (FR-SAFE-3). Dropping those fields would
+// silently widen what an unattended step may do relative to what the user
+// queued, and dropping MaxBudgetUSD would defeat FR-SAFE-2's per-job spend
+// cap on every child. Children also inherit the parent's own Resumable
+// setting, since reaching this strategy already means the user marked the
+// whole job as unsafe to interrupt mid-run; that guarantee carries over to
+// each step. Each child is tagged with ParentJobID so it's traceable back
+// to the promoted parent, and the first child inherits the parent's
+// SessionID when it has one, so a parent that already paid for context
+// (e.g. one paused at a budget cap) continues that conversation rather than
+// throwing it away — §6.4's "children share the parent's session".
+//
+// The parent itself is marked StatusPromoted — its own work now lives
+// entirely in the children — recording which child IDs it became. Because
+// Promoted is terminal-but-not-succeeded, any job that was Blocked on the
+// parent is repointed at the chain's last child first: otherwise the next
+// PromoteReady sweep would read the parent as a dead dependency and cancel
+// those dependents, even though the work is proceeding normally.
+//
+// PromoteSteps is idempotent by ParentJobID: if children already exist for
+// this parent it creates none, and only ensures the parent is recorded as
+// Promoted (self-healing a previous call that created children but failed
+// before that final status write). Without that, a partial failure would
+// have the scheduler re-promote the same parent every tick, spending real
+// tokens on a fresh set of duplicate children each time.
+func (q *Queue) PromoteSteps(ctx context.Context, id string) ([]store.Job, error) {
+	job, err := q.store.GetJob(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(job.Steps) == 0 {
+		return nil, fmt.Errorf("%w: job %s", ErrNoSteps, id)
+	}
+
+	// Checked before the terminal guard rather than after it, because a
+	// successful promotion leaves the parent terminal (Promoted): a repeat
+	// call has to land here, not in ErrAlreadyTerminal.
+	existing, err := q.store.ListJobs(ctx, store.ListFilter{ParentJobID: id})
+	if err != nil {
+		return nil, fmt.Errorf("listing existing children of job %s: %w", id, err)
+	}
+	if len(existing) > 0 {
+		existing = orderChain(existing)
+		if job.Status != store.StatusPromoted {
+			if err := q.store.UpdateStatus(ctx, id, store.StatusPromoted, promotionReason(existing)); err != nil {
+				return nil, err
+			}
+		}
+		return existing, nil
+	}
+
+	if job.Status.Terminal() {
+		return nil, fmt.Errorf("%w: job %s is already %s", ErrAlreadyTerminal, id, job.Status)
+	}
+
+	children := make([]store.Job, 0, len(job.Steps))
+	for i, step := range job.Steps {
+		child := store.Job{
+			Kind:             job.Kind,
+			Prompt:           step,
+			Workspace:        job.Workspace,
+			Model:            job.Model,
+			Effort:           job.Effort,
+			Priority:         job.Priority,
+			ParentJobID:      job.ID,
+			Resumable:        job.Resumable,
+			AllowedTools:     job.AllowedTools,
+			PermissionMode:   job.PermissionMode,
+			AddDirs:          job.AddDirs,
+			FreeformWorktree: job.FreeformWorktree,
+			MaxBudgetUSD:     job.MaxBudgetUSD,
+			Attachments:      job.Attachments,
+			JSONSchema:       job.JSONSchema,
+			DeadlineAt:       job.DeadlineAt,
+		}
+		if i == 0 {
+			// runner.BuildArgs decides --resume purely on SessionID being
+			// non-empty, so handing the parent's session to the head of the
+			// chain is safe regardless of the child's own Resumable setting.
+			child.SessionID = job.SessionID
+		} else {
+			child.DependsOn = []string{children[i-1].ID}
+		}
+
+		// Created one at a time and in order, so each child's DependsOn names
+		// a job that already exists. A failure partway through leaves the
+		// children created so far in place rather than rolling back: nothing
+		// in this codebase spans a transaction across store calls, and the
+		// idempotency check above makes the retry pick up where this left off
+		// instead of duplicating the chain.
+		created, err := q.Enqueue(ctx, child)
+		if err != nil {
+			return nil, fmt.Errorf("promoting step %d of job %s: %w", i, id, err)
+		}
+		children = append(children, created)
+	}
+
+	// Rewiring failures are collected rather than fatal: the children are
+	// created and correct either way, and the parent still needs to reach
+	// StatusPromoted so a retry doesn't re-promote it.
+	var errs []error
+	if err := q.rewireDependents(ctx, job.ID, children[len(children)-1].ID); err != nil {
+		errs = append(errs, err)
+	}
+	if err := q.store.UpdateStatus(ctx, id, store.StatusPromoted, promotionReason(children)); err != nil {
+		errs = append(errs, err)
+		return nil, errors.Join(errs...)
+	}
+	return children, errors.Join(errs...)
+}
+
+// rewireDependents repoints every Blocked job that depends on parentID at
+// lastChildID instead — the chain's final unit of work, which is what such
+// a dependent actually meant to wait for. See PromoteSteps for why this is
+// necessary at all (Promoted is terminal and not Succeeded, so leaving the
+// dependency in place would have computeStatus cancel these jobs). Errors
+// are joined rather than aborting the sweep, exactly like PromoteReady.
+func (q *Queue) rewireDependents(ctx context.Context, parentID, lastChildID string) error {
+	blocked, err := q.store.ListJobs(ctx, store.ListFilter{Statuses: []store.Status{store.StatusBlocked}})
+	if err != nil {
+		return fmt.Errorf("listing blocked dependents of job %s: %w", parentID, err)
+	}
+
+	var errs []error
+	for _, b := range blocked {
+		rewritten := make([]string, 0, len(b.DependsOn))
+		var found bool
+		for _, dep := range b.DependsOn {
+			if dep == parentID {
+				dep = lastChildID
+				found = true
+			}
+			rewritten = append(rewritten, dep)
+		}
+		if !found {
+			continue
+		}
+		if err := q.store.UpdateDependsOn(ctx, b.ID, rewritten); err != nil {
+			errs = append(errs, fmt.Errorf("job %s: repointing dependency %s at %s: %w", b.ID, parentID, lastChildID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// promotionReason is the parent's FailureReason text, naming the children
+// it became so the promotion stays traceable from the parent alone.
+func promotionReason(children []store.Job) string {
+	ids := make([]string, 0, len(children))
+	for _, c := range children {
+		ids = append(ids, c.ID)
+	}
+	return fmt.Sprintf("promoted into %d step(s): %s", len(ids), strings.Join(ids, ", "))
+}
+
+// orderChain sorts a promoted parent's children back into chain order (head
+// first, each subsequent child depending on the one before it). ListJobs
+// orders by priority then created_at, and a promotion's children share a
+// priority and are created within the same one-second created_at tick, so
+// storage order says nothing about the chain — the DependsOn links do. A
+// set of children that doesn't form a single chain is handed back untouched
+// rather than guessed at.
+func orderChain(children []store.Job) []store.Job {
+	ids := make(map[string]bool, len(children))
+	for _, c := range children {
+		ids[c.ID] = true
+	}
+
+	successor := make(map[string]store.Job, len(children))
+	var head *store.Job
+	for i, c := range children {
+		var prev string
+		for _, dep := range c.DependsOn {
+			if ids[dep] {
+				prev = dep
+				break
+			}
+		}
+		if prev == "" {
+			if head != nil {
+				return children // more than one head: not a single chain
+			}
+			head = &children[i]
+			continue
+		}
+		successor[prev] = c
+	}
+	if head == nil {
+		return children
+	}
+
+	ordered := make([]store.Job, 0, len(children))
+	cur := *head
+	for range children {
+		ordered = append(ordered, cur)
+		next, ok := successor[cur.ID]
+		if !ok {
+			break
+		}
+		cur = next
+	}
+	if len(ordered) != len(children) {
+		return children
+	}
+	return ordered
+}
+
 // resolveDeps fetches every dependency job and errors naming any ID that
 // doesn't exist, rather than silently treating a typo'd dependency ID as
 // "not yet satisfied" forever.
@@ -281,6 +515,15 @@ func (q *Queue) resolveDeps(ctx context.Context, ids []string) ([]store.Job, err
 // computeStatus decides a job's status from its (already-resolved)
 // dependencies: Queued if there are none or all succeeded, Cancelled if any
 // reached a terminal non-success state, otherwise Blocked.
+//
+// StatusPromoted is deliberately not special-cased here even though it is
+// terminal-and-not-succeeded: a promoted dependency's work is proceeding in
+// its children, so cancelling its dependents would be wrong. PromoteSteps
+// handles it instead, by repointing every Blocked dependent at the chain's
+// last child at promotion time — so by the time any sweep runs,
+// computeStatus should never see a Promoted dependency at all. One that
+// does show up (a job enqueued against an already-promoted parent) is
+// genuinely un-runnable as written and cancelling it is the right call.
 func computeStatus(deps []store.Job) (store.Status, string) {
 	if len(deps) == 0 {
 		return store.StatusQueued, ""

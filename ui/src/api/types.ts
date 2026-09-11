@@ -17,6 +17,7 @@ export type JobStatus =
   | 'running'
   | 'paused_budget'
   | 'deferred_oversized'
+  | 'promoted'
   | 'succeeded'
   | 'failed'
   | 'cancelled'
@@ -63,6 +64,7 @@ export interface JobResponse {
   freeform_worktree?: boolean
   json_schema?: string
   session_id?: string
+  parent_job_id?: string
   status: JobStatus
   failure_reason?: string
   result?: string

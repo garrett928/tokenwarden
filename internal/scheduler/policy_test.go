@@ -167,6 +167,72 @@ func TestFitJob_OversizedAndResumable_CapsBudget(t *testing.T) {
 	}
 }
 
+// TestFitJob_OversizedWithDeclaredSteps covers §6.4 strategy 2's entry
+// condition and, just as importantly, where it sits in FitJob's ordering:
+// declared Steps are only reached for a job that isn't Resumable, so
+// strategy 1 (budget-capped continuation) still wins for a Resumable job
+// that happens to also declare Steps.
+func TestFitJob_OversizedWithDeclaredSteps(t *testing.T) {
+	// 10000 tokens / 1000 tokens-per-percent = 10%, exceeding the 8%
+	// remaining headroom (78% ceiling - 70% used) in every case below.
+	prediction := budget.CostPrediction{Tokens: 10000, CostUSD: 2, Samples: 5}
+	cal := budget.CalibrationEstimate{TokensPerPercent: 1000, Samples: 5}
+
+	tests := []struct {
+		name string
+		job  store.Job
+		want FitAction
+		why  string
+	}{
+		{
+			name: "not resumable, has steps",
+			job:  store.Job{Resumable: false, Steps: []string{"design it", "build it", "test it"}},
+			want: FitPromoteSteps,
+			why:  "user-authored split points exist, so promote them into child jobs instead of parking the whole job",
+		},
+		{
+			name: "not resumable, no steps",
+			job:  store.Job{Resumable: false},
+			want: FitDefer,
+			why:  "no strategy applies without either resumability or declared steps (strategy 3 is unimplemented)",
+		},
+		{
+			name: "resumable, has steps",
+			job:  store.Job{Resumable: true, Steps: []string{"design it", "build it"}},
+			want: FitCapBudget,
+			why:  "strategy 1 takes priority over strategy 2: capping keeps the job whole, promotion splits it",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FitJob(tt.job, prediction, cal, fitCfg, 70)
+			if got.Action != tt.want {
+				t.Errorf("Action = %v, want %v (%s)", got.Action, tt.want, tt.why)
+			}
+			if got.Reason == "" && tt.want != FitDispatch {
+				t.Error("Reason is empty, want an explanation recorded alongside the verdict")
+			}
+		})
+	}
+}
+
+// TestFitJob_FitsHeadroomWithSteps_DispatchesWhole is the boundary on the
+// other side of strategy 2: Steps are a fitting fallback, not a directive.
+// A job that fits remaining headroom runs as one dispatch even though it
+// declares split points.
+func TestFitJob_FitsHeadroomWithSteps_DispatchesWhole(t *testing.T) {
+	job := store.Job{Resumable: false, Steps: []string{"design it", "build it"}}
+	// 5000 / 1000 = 5%, inside the 8% remaining headroom.
+	prediction := budget.CostPrediction{Tokens: 5000, CostUSD: 1, Samples: 5}
+	cal := budget.CalibrationEstimate{TokensPerPercent: 1000, Samples: 5}
+
+	got := FitJob(job, prediction, cal, fitCfg, 70)
+	if got.Action != FitDispatch {
+		t.Errorf("Action = %v, want FitDispatch (declared steps don't force a split when the job already fits)", got.Action)
+	}
+}
+
 func TestFitJob_OversizedResumableNoHeadroomLeft_Defers(t *testing.T) {
 	job := store.Job{Resumable: true}
 	prediction := budget.CostPrediction{Tokens: 10000, CostUSD: 2, Samples: 5}

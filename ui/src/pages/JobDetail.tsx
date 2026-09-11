@@ -74,7 +74,7 @@ export default function JobDetail({ id }: { id: string }) {
   }
 
   // Button gating logic
-  const isTerminal = ['succeeded', 'failed', 'cancelled'].includes(job?.status ?? '')
+  const isTerminal = ['succeeded', 'failed', 'cancelled', 'promoted'].includes(job?.status ?? '')
   const canCancel = !isTerminal
   const canDispatch = job?.status === 'queued' || job?.status === 'paused_budget'
 
@@ -209,6 +209,7 @@ export default function JobDetail({ id }: { id: string }) {
             job.deadline_at ||
             job.max_budget_usd ||
             job.session_id ||
+            job.parent_job_id ||
             (job.depends_on && job.depends_on.length > 0)) && (
             <div>
               <h3 style={{ margin: '0 0 12px 0' }}>Scheduling & Constraints</h3>
@@ -247,6 +248,16 @@ export default function JobDetail({ id }: { id: string }) {
                       Session ID
                     </div>
                     <div style={{ marginTop: '4px', wordBreak: 'break-all' }}>{job.session_id}</div>
+                  </div>
+                )}
+                {job.parent_job_id && (
+                  <div>
+                    <div className="muted" style={{ fontSize: '12px', fontWeight: 600 }}>
+                      Parent Job
+                    </div>
+                    <div style={{ marginTop: '4px', wordBreak: 'break-all' }}>
+                      {job.parent_job_id}
+                    </div>
                   </div>
                 )}
                 {job.depends_on && job.depends_on.length > 0 && (

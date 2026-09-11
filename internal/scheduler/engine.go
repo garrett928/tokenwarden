@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"tokenwarden/internal/budget"
@@ -52,13 +53,23 @@ type TickResult struct {
 	// (§6.4 strategy 4) before finding one that fit — empty on a tick
 	// where the first candidate dispatched cleanly.
 	DeferredJobIDs []string
+	// PromotedJobIDs lists candidates this tick promoted into step children
+	// (§6.4 strategy 2) before finding one that fit. Like a defer, a
+	// promotion dispatches nothing itself: the children are queued for a
+	// later tick to pick up.
+	PromotedJobIDs []string
+	// PromotedChildJobIDs lists the child jobs those promotions produced,
+	// in chain order, flattened across every promotion this tick — so an
+	// operator (and a test) can see what a promotion actually created
+	// rather than only that one happened.
+	PromotedChildJobIDs []string
 }
 
 // Tick runs one iteration of REQUIREMENTS.md §6.2's dispatch loop: load
 // config, refresh usage state (step 1), apply the admission checks (steps
 // 2-4), and if nothing holds it back, walk runnable candidates in priority
 // order (step 7) fitting each against remaining five-hour headroom (§6.4)
-// until one dispatches (step 8) or all of them defer. It dispatches
+// until one dispatches (step 8) or all of them defer or promote. It dispatches
 // synchronously — Tick doesn't return until the job it started finishes.
 // That's deliberate for this slice: REQUIREMENTS.md §10 open question 2
 // (concurrency) is unresolved, so nothing here runs more than one job at a
@@ -67,6 +78,22 @@ func (e *Engine) Tick(ctx context.Context) (TickResult, error) {
 	cfg, err := e.store.GetSchedulerConfig(ctx)
 	if err != nil {
 		return TickResult{}, fmt.Errorf("getting scheduler config: %w", err)
+	}
+
+	// Dependency bookkeeping, not dispatch pacing: a Blocked job whose
+	// dependencies have since finished must become runnable (or cancelled)
+	// whether or not this tick goes on to dispatch anything, so this runs
+	// before the admission checks can return early. It's also what advances
+	// a promoted step chain (§6.4 strategy 2) from one child to the next.
+	//
+	// PromoteReady already collects per-job errors instead of aborting its
+	// own sweep, so an error here means some individual job is stuck (e.g. a
+	// dangling dependency), not that the sweep failed. Logging and carrying
+	// on is deliberate: returning would let one permanently-broken blocked
+	// job wedge the whole scheduler, since every later tick would fail at
+	// this same point before ever reaching Decide.
+	if _, err := e.queue.PromoteReady(ctx); err != nil {
+		log.Printf("scheduler: promoting ready jobs: %v", err)
 	}
 
 	now := e.clock.Now()
@@ -115,6 +142,21 @@ func (e *Engine) Tick(ctx context.Context) (TickResult, error) {
 			}
 			result.DeferredJobIDs = append(result.DeferredJobIDs, job.ID)
 			continue // try the next-best candidate, §6.2 step 7
+		case FitPromoteSteps:
+			children, err := e.queue.PromoteSteps(ctx, job.ID)
+			if err != nil {
+				return TickResult{}, fmt.Errorf("promoting steps for job %s: %w", job.ID, err)
+			}
+			childIDs := make([]string, 0, len(children))
+			for _, c := range children {
+				childIDs = append(childIDs, c.ID)
+			}
+			log.Printf("scheduler: promoted job %s into %d step child job(s): %s", job.ID, len(childIDs), strings.Join(childIDs, ", "))
+			result.PromotedJobIDs = append(result.PromotedJobIDs, job.ID)
+			result.PromotedChildJobIDs = append(result.PromotedChildJobIDs, childIDs...)
+			// The new children weren't in this tick's candidates, so they
+			// wait for the next one; try the next-best candidate meanwhile.
+			continue
 		case FitCapBudget:
 			if err := e.queue.CapBudget(ctx, job.ID, fit.BudgetCapUSD); err != nil {
 				return TickResult{}, fmt.Errorf("capping budget for job %s: %w", job.ID, err)
@@ -132,7 +174,8 @@ func (e *Engine) Tick(ctx context.Context) (TickResult, error) {
 		return result, nil
 	}
 
-	// Every candidate this tick was oversized and deferred.
+	// Every candidate this tick was oversized: deferred, or promoted into
+	// children a later tick will pick up.
 	return result, nil
 }
 

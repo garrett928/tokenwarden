@@ -70,14 +70,14 @@ func (s *Store) CreateJob(ctx context.Context, j Job) (Job, error) {
 			id, kind, prompt, workspace, model, effort,
 			attachments, steps, resumable, priority,
 			earliest_at, deadline_at, max_budget_usd, depends_on,
-			session_id, status, failure_reason, result_text, created_at, updated_at,
+			session_id, parent_job_id, status, failure_reason, result_text, created_at, updated_at,
 			permission_mode, allowed_tools, add_dirs, json_schema, freeform_worktree
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		j.ID, string(j.Kind), j.Prompt, j.Workspace, j.Model, j.Effort,
 		string(attachmentsJSON), string(stepsJSON), j.Resumable, j.Priority,
 		unixOrNil(j.EarliestAt), unixOrNil(j.DeadlineAt), j.MaxBudgetUSD, string(dependsOnJSON),
-		j.SessionID, string(j.Status), j.FailureReason, j.Result, j.CreatedAt.Unix(), j.UpdatedAt.Unix(),
+		j.SessionID, j.ParentJobID, string(j.Status), j.FailureReason, j.Result, j.CreatedAt.Unix(), j.UpdatedAt.Unix(),
 		j.PermissionMode, string(allowedToolsJSON), string(addDirsJSON), j.JSONSchema, j.FreeformWorktree,
 	)
 	if err != nil {
@@ -126,10 +126,13 @@ func (s *Store) GetJobs(ctx context.Context, ids []string) ([]Job, error) {
 }
 
 // ListJobs returns jobs matching filter, ordered by priority (highest
-// first) and then by creation time (oldest first) as a tiebreaker.
+// first) and then by creation time (oldest first) as a tiebreaker. Filter
+// fields are ANDed: setting both Statuses and ParentJobID returns only that
+// parent's children in one of those statuses.
 func (s *Store) ListJobs(ctx context.Context, filter ListFilter) ([]Job, error) {
 	query := jobSelectColumns + ` FROM jobs`
 	var args []any
+	var where []string
 
 	if len(filter.Statuses) > 0 {
 		placeholders := make([]string, len(filter.Statuses))
@@ -137,7 +140,14 @@ func (s *Store) ListJobs(ctx context.Context, filter ListFilter) ([]Job, error) 
 			placeholders[i] = "?"
 			args = append(args, string(st))
 		}
-		query += ` WHERE status IN (` + strings.Join(placeholders, ",") + `)`
+		where = append(where, `status IN (`+strings.Join(placeholders, ",")+`)`)
+	}
+	if filter.ParentJobID != "" {
+		where = append(where, `parent_job_id = ?`)
+		args = append(args, filter.ParentJobID)
+	}
+	if len(where) > 0 {
+		query += ` WHERE ` + strings.Join(where, " AND ")
 	}
 	query += ` ORDER BY priority DESC, created_at ASC`
 
@@ -171,6 +181,24 @@ func (s *Store) UpdateSessionID(ctx context.Context, id, sessionID string) error
 	`, sessionID, time.Now().UTC().Unix(), id)
 	if err != nil {
 		return fmt.Errorf("updating session id for job %s: %w", id, err)
+	}
+	return checkRowsAffected(res, id)
+}
+
+// UpdateDependsOn rewrites a job's dependency list. Used by the scheduler's
+// §6.4 strategy 2 (declared-steps promotion): a job that depended on a
+// parent being promoted is repointed at the chain's last child, since the
+// promoted parent itself will never succeed.
+func (s *Store) UpdateDependsOn(ctx context.Context, id string, dependsOn []string) error {
+	dependsOnJSON, err := json.Marshal(nonNilStrings(dependsOn))
+	if err != nil {
+		return fmt.Errorf("encoding depends_on for job %s: %w", id, err)
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE jobs SET depends_on = ?, updated_at = ? WHERE id = ?
+	`, string(dependsOnJSON), time.Now().UTC().Unix(), id)
+	if err != nil {
+		return fmt.Errorf("updating depends_on for job %s: %w", id, err)
 	}
 	return checkRowsAffected(res, id)
 }
@@ -244,7 +272,7 @@ var ErrInvalidJob = errors.New("invalid job")
 func isKnownStatus(s Status) bool {
 	switch s {
 	case StatusQueued, StatusBlocked, StatusRunning, StatusPausedBudget,
-		StatusDeferredOversized, StatusSucceeded, StatusFailed, StatusCancelled:
+		StatusDeferredOversized, StatusPromoted, StatusSucceeded, StatusFailed, StatusCancelled:
 		return true
 	default:
 		return false

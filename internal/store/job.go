@@ -37,18 +37,28 @@ const (
 	StatusRunning           Status = "running"
 	StatusPausedBudget      Status = "paused_budget"      // hit --max-budget-usd, awaiting --resume
 	StatusDeferredOversized Status = "deferred_oversized" // couldn't be fit; see REQUIREMENTS.md §6.4
-	StatusSucceeded         Status = "succeeded"
-	StatusFailed            Status = "failed"
-	StatusCancelled         Status = "cancelled"
+	// StatusPromoted means Steps were promoted into child jobs (§6.4
+	// strategy 2); this job itself never dispatches.
+	StatusPromoted  Status = "promoted"
+	StatusSucceeded Status = "succeeded"
+	StatusFailed    Status = "failed"
+	StatusCancelled Status = "cancelled"
 )
 
 // Terminal reports whether a job in this status will never transition again
 // on its own. Used by dependency gating: only a Succeeded dependency
-// unblocks a downstream job, but Failed/Cancelled are also terminal for
-// purposes of deciding a blocked job will never become runnable.
+// unblocks a downstream job, but Failed/Cancelled/Promoted are also terminal
+// for purposes of deciding a blocked job will never become runnable.
+//
+// Promoted is the one terminal status that does not mean the work died: a
+// promoted parent's work continues in its children. queue.computeStatus
+// would therefore cancel its dependents as if it had failed, so
+// queue.PromoteSteps rewires those dependents onto the chain's last child
+// before the next PromoteReady sweep ever sees the promoted parent — the
+// special case lives there, not in computeStatus.
 func (s Status) Terminal() bool {
 	switch s {
-	case StatusSucceeded, StatusFailed, StatusCancelled:
+	case StatusSucceeded, StatusFailed, StatusCancelled, StatusPromoted:
 		return true
 	default:
 		return false
@@ -100,6 +110,9 @@ type Job struct {
 	DependsOn    []string
 
 	SessionID string // set after first dispatch; enables --resume
+	// ParentJobID is set when this job was created by promoting another
+	// job's Steps (§6.4 strategy 2); empty for an ordinary job.
+	ParentJobID string
 
 	Status        Status
 	FailureReason string
@@ -116,4 +129,8 @@ type Job struct {
 type ListFilter struct {
 	// Statuses restricts results to these statuses. Empty means no filter.
 	Statuses []Status
+	// ParentJobID restricts results to the children of one promoted parent
+	// (§6.4 strategy 2). Empty means no filter, exactly like an empty
+	// Statuses; both may be set at once and are ANDed together.
+	ParentJobID string
 }
