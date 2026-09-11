@@ -122,6 +122,12 @@ const (
 	// FitCapBudget means the job doesn't fit, but is Resumable: cap its
 	// budget to remaining headroom and dispatch it anyway (§6.4 strategy 1).
 	FitCapBudget
+	// FitPromoteSteps means the job doesn't fit and isn't Resumable, but
+	// carries user-authored Steps: promote them into child jobs (§6.4
+	// strategy 2) so the ones that fit can run this window. Nothing
+	// dispatches this tick — the children aren't in the candidate list yet —
+	// so the caller moves on to the next-best candidate, same as FitDefer.
+	FitPromoteSteps
 	// FitDefer means the job doesn't fit and can't be fit by any strategy
 	// this slice implements: DeferOversized it and let the caller try the
 	// next-best candidate (§6.4 strategy 4, §6.2 step 7).
@@ -141,10 +147,10 @@ type FitResult struct {
 // FitJob implements REQUIREMENTS.md §6.4 for one candidate job: whether its
 // predicted cost fits the five-hour window's remaining headroom, and if
 // not, which of the implemented strategies (1: budget-capped continuation,
-// 4: defer) applies. Declared-steps promotion (strategy 2) and
-// model-driven decomposition (strategy 3) aren't implemented yet — see the
-// package doc — so a job that doesn't fit and isn't Resumable always
-// defers rather than attempting either.
+// 2: declared-steps promotion, 4: defer) applies. Model-driven
+// decomposition (strategy 3) isn't implemented yet — see the package doc —
+// so a job that doesn't fit, isn't Resumable, and declares no Steps always
+// defers rather than attempting it.
 //
 // Per §10 open question 3's resolution, an insufficient cost prediction or
 // five-hour calibration means "no signal", not "assume it fits by
@@ -163,6 +169,12 @@ func FitJob(job store.Job, prediction budget.CostPrediction, cal budget.Calibrat
 		return FitResult{Action: FitDispatch}
 	}
 
+	if !job.Resumable && len(job.Steps) > 0 {
+		return FitResult{
+			Action: FitPromoteSteps,
+			Reason: fmt.Sprintf("predicted cost (~%.0f%% of the five-hour window) exceeds %.0f%% remaining headroom; promoting %d declared step(s) into child jobs", predictedPercent, remainingPercent, len(job.Steps)),
+		}
+	}
 	if !job.Resumable {
 		return FitResult{
 			Action: FitDefer,

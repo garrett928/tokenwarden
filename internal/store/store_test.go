@@ -137,6 +137,7 @@ func TestGetJob_RoundTripsAllFields(t *testing.T) {
 		FreeformWorktree: true,
 		JSONSchema:       `{"type":"object"}`,
 		Result:           "some diagnostic output",
+		ParentJobID:      "job_promoted_parent",
 	}
 
 	created, err := s.CreateJob(ctx, in)
@@ -189,6 +190,9 @@ func TestGetJob_RoundTripsAllFields(t *testing.T) {
 	}
 	if got.Result != in.Result {
 		t.Errorf("Result = %q, want %q", got.Result, in.Result)
+	}
+	if got.ParentJobID != in.ParentJobID {
+		t.Errorf("ParentJobID = %q, want %q", got.ParentJobID, in.ParentJobID)
 	}
 }
 

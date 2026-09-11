@@ -170,6 +170,45 @@ func TestTick_OversubscribedQueue_DispatchesHighestPriority(t *testing.T) {
 	}
 }
 
+// TestTick_BrokenBlockedJob_DoesNotWedgeTheTick covers the failure mode
+// where one unfixable blocked job (here, a dangling DependsOn) makes
+// PromoteReady return an error every sweep: since PromoteReady already
+// collects per-job errors rather than aborting, Tick must log and carry on
+// to dispatch the jobs that are fine — otherwise the whole scheduler stalls
+// forever on one bad row.
+func TestTick_BrokenBlockedJob_DoesNotWedgeTheTick(t *testing.T) {
+	t.Setenv("FAKECLAUDE_FIXTURE", "happy_path")
+	te := newTestEngine(t, time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC))
+	ctx := context.Background()
+
+	if err := te.store.UpdateSchedulerConfig(ctx, store.SchedulerConfig{Enabled: true, Aggressiveness: 80}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Created through the store directly: Enqueue would (correctly) reject a
+	// dependency that doesn't exist, but a row like this can survive a
+	// deleted dependency.
+	broken := minimalJob()
+	broken.Status = store.StatusBlocked
+	broken.DependsOn = []string{"job_deleted_out_from_under_it"}
+	if _, err := te.store.CreateJob(ctx, broken); err != nil {
+		t.Fatal(err)
+	}
+
+	healthy, err := te.queue.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := te.engine.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick() error: %v — a broken blocked job must not fail the whole tick", err)
+	}
+	if !got.Dispatched || got.JobID != healthy.ID {
+		t.Fatalf("Tick() dispatched job %q (dispatched=%v), want the healthy job %q", got.JobID, got.Dispatched, healthy.ID)
+	}
+}
+
 // TestTick_ReservedBlock_HoldsOff covers NFR-TEST-2's reserved-block
 // scenario.
 func TestTick_ReservedBlock_HoldsOff(t *testing.T) {
@@ -401,6 +440,304 @@ func TestTick_OversizedResumableJob_CapsBudgetAndDispatches(t *testing.T) {
 	if after.SessionID == "" {
 		t.Error("SessionID is empty, want it recorded so a later tick can --resume")
 	}
+}
+
+// stepChildren returns every job promoted from parentID, in creation
+// order — the chain PromoteSteps built, as the store actually holds it.
+func stepChildren(t *testing.T, te testEngine, parentID string) []store.Job {
+	t.Helper()
+	children, err := te.queue.List(context.Background(), store.ListFilter{ParentJobID: parentID})
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+
+	// Ordered by the DependsOn links, not CreatedAt: a promotion's children
+	// are all created within the same one-second created_at tick, so
+	// timestamps can't tell the chain's head from its tail.
+	successor := make(map[string]store.Job, len(children))
+	var head store.Job
+	for _, c := range children {
+		if len(c.DependsOn) == 0 {
+			head = c
+			continue
+		}
+		successor[c.DependsOn[0]] = c
+	}
+	ordered := make([]store.Job, 0, len(children))
+	for cur := head; ; {
+		ordered = append(ordered, cur)
+		next, ok := successor[cur.ID]
+		if !ok || len(ordered) == len(children) {
+			break
+		}
+		cur = next
+	}
+	if len(ordered) != len(children) {
+		t.Fatalf("children of %s do not form one dependency chain: %+v", parentID, children)
+	}
+	return ordered
+}
+
+// TestTick_OversizedJobWithSteps_PromotesAndDispatchesNextBestCandidate
+// covers §6.4 strategy 2 end to end: the top-priority candidate's
+// predicted cost doesn't fit remaining five-hour headroom and it isn't
+// Resumable (so strategy 1 doesn't apply), but it declares Steps — so
+// instead of being parked as oversized (strategy 4), it's promoted into a
+// chain of child jobs. Nothing from that chain runs this tick: the
+// children didn't exist when candidates were fetched, so the engine moves
+// on to the next-best candidate exactly as it does after a defer.
+func TestTick_OversizedJobWithSteps_PromotesAndDispatchesNextBestCandidate(t *testing.T) {
+	te := newTestEngine(t, time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC))
+	ctx := context.Background()
+	start := te.clock.Now()
+
+	if err := te.store.UpdateSchedulerConfig(ctx, store.SchedulerConfig{Enabled: true, Aggressiveness: 80}); err != nil {
+		t.Fatal(err)
+	}
+	last := seedFittingData(t, te, start)
+	te.clock.Set(last.Add(time.Minute)) // ground truth still fresh
+
+	steps := []string{"survey the modules", "draft the migration", "write the tests"}
+	big := store.Job{
+		Kind:      store.JobKindResearch,
+		Prompt:    "oversized, but the user declared split points",
+		Priority:  10,
+		Resumable: false,
+		Steps:     steps,
+	}
+	bigJob, err := te.queue.Enqueue(ctx, big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A plan-kind job has no prediction history yet (cold start,
+	// Insufficient) -> FitJob dispatches it without trying to fit it.
+	small := store.Job{Kind: store.JobKindPlan, Prompt: "small", Priority: 1}
+	smallJob, err := te.queue.Enqueue(ctx, small)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("FAKECLAUDE_FIXTURE", "happy_path")
+	got, err := te.engine.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick() error: %v", err)
+	}
+
+	if len(got.PromotedJobIDs) != 1 || got.PromotedJobIDs[0] != bigJob.ID {
+		t.Errorf("PromotedJobIDs = %v, want [%s]", got.PromotedJobIDs, bigJob.ID)
+	}
+	if len(got.DeferredJobIDs) != 0 {
+		t.Errorf("DeferredJobIDs = %v, want none (declared steps should be promoted, not deferred)", got.DeferredJobIDs)
+	}
+	if !got.Dispatched || got.JobID != smallJob.ID {
+		t.Fatalf("Tick() dispatched job %q (dispatched=%v), want the next-best candidate %q", got.JobID, got.Dispatched, smallJob.ID)
+	}
+
+	promoted, err := te.queue.Get(ctx, bigJob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promoted.Status != store.StatusPromoted {
+		t.Errorf("oversized job Status = %q, want %q", promoted.Status, store.StatusPromoted)
+	}
+	if promoted.FailureReason == "" {
+		t.Error("promoted job FailureReason is empty, want it naming the children it became")
+	}
+
+	children := stepChildren(t, te, bigJob.ID)
+	if len(children) != len(steps) {
+		t.Fatalf("found %d child jobs for the promoted parent, want one per step (%d)", len(children), len(steps))
+	}
+	for i, child := range children {
+		if child.Prompt != steps[i] {
+			t.Errorf("child %d Prompt = %q, want step %q", i, child.Prompt, steps[i])
+		}
+		wantStatus := store.StatusBlocked
+		if i == 0 {
+			wantStatus = store.StatusQueued
+		}
+		if child.Status != wantStatus {
+			t.Errorf("child %d Status = %q, want %q — promotion queues the chain, it doesn't dispatch from it this tick", i, child.Status, wantStatus)
+		}
+	}
+
+	dispatched, err := te.queue.Get(ctx, smallJob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dispatched.Status != store.StatusSucceeded {
+		t.Errorf("next-best job Status = %q, want succeeded", dispatched.Status)
+	}
+}
+
+// TestTick_PromotedStepChain_AdvancesWithInheritedSession follows a
+// promoted chain across several ticks: promote, run step one, advance to
+// step two, run step two. The point of interest is the handoff — step two
+// must pick up step one's session ID so its dispatch is a --resume of the
+// same conversation rather than a cold start that has forgotten what step
+// one did. A reserved block on the advancing tick also pins down why
+// PromoteReady runs before Tick's admission checks rather than after: the
+// chain has to keep advancing even on a tick that will dispatch nothing.
+func TestTick_PromotedStepChain_AdvancesWithInheritedSession(t *testing.T) {
+	te := newTestEngine(t, time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC))
+	ctx := context.Background()
+	start := te.clock.Now()
+
+	openCfg := store.SchedulerConfig{Enabled: true, Aggressiveness: 80}
+	if err := te.store.UpdateSchedulerConfig(ctx, openCfg); err != nil {
+		t.Fatal(err)
+	}
+	last := seedFittingData(t, te, start)
+	te.clock.Set(last.Add(time.Minute))
+
+	parent := store.Job{
+		Kind:      store.JobKindResearch,
+		Prompt:    "oversized, two declared steps",
+		Priority:  10,
+		Resumable: false,
+		Steps:     []string{"gather the sources", "summarize them"},
+	}
+	parentJob, err := te.queue.Enqueue(ctx, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Tick 1: promote. It's the only candidate, so nothing dispatches.
+	got, err := te.engine.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick() 1 error: %v", err)
+	}
+	if got.Dispatched {
+		t.Errorf("Tick 1 dispatched job %q, want nothing (the promoted children aren't candidates until the next tick)", got.JobID)
+	}
+	if len(got.PromotedJobIDs) != 1 || got.PromotedJobIDs[0] != parentJob.ID {
+		t.Fatalf("Tick 1 PromotedJobIDs = %v, want [%s]", got.PromotedJobIDs, parentJob.ID)
+	}
+	children := stepChildren(t, te, parentJob.ID)
+	if len(children) != 2 {
+		t.Fatalf("found %d child jobs, want 2", len(children))
+	}
+
+	// The five-hour window rolls over between ticks, so a single step now
+	// fits remaining headroom on its own. It has to: children inherit the
+	// parent's Resumable=false, so a step that were still oversized would
+	// defer (strategy 4) rather than be budget-capped (strategy 1) —
+	// promotion must not hand a step a weaker interruptibility guarantee
+	// than the user set on the whole job. The reading carries a new
+	// FiveHourResetsAt, so calibration ignores the pair (a rollover isn't
+	// spend) and the fit maths stays the one seedFittingData set up.
+	rollover := te.clock.Now().Add(time.Minute)
+	if err := budget.New(te.store).RecordGroundTruth(ctx, budget.GroundTruthReading{
+		FiveHourUsedPercentage: 10,
+		FiveHourResetsAt:       rollover.Add(5 * time.Hour),
+		SevenDayUsedPercentage: 76,
+		SevenDayResetsAt:       start.Add(3 * 24 * time.Hour),
+		ObservedAt:             rollover,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tick 2: the chain's head runs, dispatched as-is now that it fits. The
+	// rate_limit fixture reports session rl-session-001, which is what the
+	// next step has to inherit.
+	t.Setenv("FAKECLAUDE_FIXTURE", "rate_limit")
+	te.clock.Advance(time.Minute)
+	got, err = te.engine.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick() 2 error: %v", err)
+	}
+	if !got.Dispatched || got.JobID != children[0].ID {
+		t.Fatalf("Tick 2 dispatched job %q (dispatched=%v), want the first step child %q", got.JobID, got.Dispatched, children[0].ID)
+	}
+	firstStep, err := te.queue.Get(ctx, children[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstStep.Status != store.StatusSucceeded {
+		t.Fatalf("first step Status = %q, want succeeded (fixture cost $0.01 is under the computed cap %v)", firstStep.Status, got.BudgetCapUSD)
+	}
+	if firstStep.SessionID != "rl-session-001" {
+		t.Fatalf("first step SessionID = %q, want the fixture's %q", firstStep.SessionID, "rl-session-001")
+	}
+	secondStep, err := te.queue.Get(ctx, children[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondStep.Status != store.StatusBlocked {
+		t.Errorf("second step Status = %q, want still %q — PromoteReady runs at the top of a tick, so the chain advances on the next one", secondStep.Status, store.StatusBlocked)
+	}
+
+	// Tick 3: inside a reserved block, so the admission check returns early
+	// and nothing dispatches — but the chain must still advance, and step
+	// two must come out of it carrying step one's session.
+	blockedCfg := openCfg
+	blockedCfg.ReservedBlocks = []store.TimeBlock{{StartMin: 0, EndMin: 5 * 60}} // the simulated clock sits at ~03:0x UTC
+	if err := te.store.UpdateSchedulerConfig(ctx, blockedCfg); err != nil {
+		t.Fatal(err)
+	}
+	te.clock.Advance(time.Minute)
+	got, err = te.engine.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick() 3 error: %v", err)
+	}
+	if got.Decision.Action != ActionReservedBlock {
+		t.Fatalf("Tick 3 Decision.Action = %v, want ActionReservedBlock", got.Decision.Action)
+	}
+	if got.Dispatched {
+		t.Errorf("Tick 3 dispatched job %q inside a reserved block, want nothing", got.JobID)
+	}
+
+	secondStep, err = te.queue.Get(ctx, children[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondStep.Status != store.StatusQueued {
+		t.Errorf("second step Status = %q, want %q — dependency bookkeeping runs even on a tick that dispatches nothing", secondStep.Status, store.StatusQueued)
+	}
+	if secondStep.SessionID != firstStep.SessionID {
+		t.Fatalf("second step SessionID = %q, want %q inherited from the step that just succeeded", secondStep.SessionID, firstStep.SessionID)
+	}
+	// The inherited session is only useful if it actually reaches the CLI
+	// invocation as a --resume of the same conversation.
+	args, err := runner.BuildArgs(secondStep)
+	if err != nil {
+		t.Fatalf("BuildArgs() error: %v", err)
+	}
+	if !argvHasFlagValue(args, "--resume", firstStep.SessionID) {
+		t.Errorf("BuildArgs(second step) = %v, want --resume %s (the inherited session)", args, firstStep.SessionID)
+	}
+
+	// Tick 4: reserved block over — step two dispatches.
+	if err := te.store.UpdateSchedulerConfig(ctx, openCfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKECLAUDE_FIXTURE", "happy_path")
+	te.clock.Advance(time.Minute)
+	got, err = te.engine.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick() 4 error: %v", err)
+	}
+	if !got.Dispatched || got.JobID != children[1].ID {
+		t.Fatalf("Tick 4 dispatched job %q (dispatched=%v), want the second step child %q", got.JobID, got.Dispatched, children[1].ID)
+	}
+	final, err := te.queue.Get(ctx, children[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Status != store.StatusSucceeded {
+		t.Errorf("second step Status = %q, want succeeded", final.Status)
+	}
+}
+
+// argvHasFlagValue reports whether args contains flag immediately followed
+// by value.
+func argvHasFlagValue(args []string, flag, value string) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 // TestTick_FiveHourCeilingReached_HoldsOffUntilInjectedRateLimit covers

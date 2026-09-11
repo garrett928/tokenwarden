@@ -92,6 +92,9 @@ type JobResponse struct {
 	JSONSchema       string   `json:"json_schema,omitempty"`
 
 	SessionID string `json:"session_id,omitempty"`
+	// ParentJobID is set only on a child created by promoting another job's
+	// Steps (§6.4 strategy 2).
+	ParentJobID string `json:"parent_job_id,omitempty"`
 
 	Status        string `json:"status"`
 	FailureReason string `json:"failure_reason,omitempty"`
@@ -123,6 +126,7 @@ func newJobResponse(j store.Job) JobResponse {
 		FreeformWorktree: j.FreeformWorktree,
 		JSONSchema:       j.JSONSchema,
 		SessionID:        j.SessionID,
+		ParentJobID:      j.ParentJobID,
 		Status:           string(j.Status),
 		FailureReason:    j.FailureReason,
 		Result:           j.Result,

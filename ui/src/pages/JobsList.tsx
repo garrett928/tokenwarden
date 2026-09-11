@@ -12,6 +12,7 @@ const ALL_STATUSES: JobStatus[] = [
   'running',
   'paused_budget',
   'deferred_oversized',
+  'promoted',
   'succeeded',
   'failed',
   'cancelled',
