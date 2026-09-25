@@ -809,7 +809,12 @@ func TestCandidates_IncludesPausedBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := q.Candidates(ctx, time.Now())
+	// PausedBudgetRetryCooldown starts counting from UpdateStatus's real
+	// wall-clock write above, so "now" here has to be far enough past that
+	// for the paused job to actually be eligible again — see
+	// TestCandidates_PausedBudget_RespectsRetryCooldown for the cooldown
+	// itself; this test is about ordering once it's past that.
+	got, err := q.Candidates(ctx, time.Now().Add(PausedBudgetRetryCooldown+time.Minute))
 	if err != nil {
 		t.Fatalf("Candidates() error: %v", err)
 	}
@@ -824,6 +829,54 @@ func TestCandidates_IncludesPausedBudget(t *testing.T) {
 	}
 	if got[1].ID != freshJob.ID {
 		t.Errorf("Candidates()[1] = %s, want %s", got[1].ID, freshJob.ID)
+	}
+}
+
+// TestCandidates_PausedBudget_RespectsRetryCooldown proves the fix for a
+// real bug found live: without this, a PausedBudget job was a valid
+// Candidates entry on literally every tick, so a job whose MaxBudgetUSD was
+// too tight to ever finish got redispatched roughly every 30s, spending up
+// to its cap again each time — confirmed burning double-digit percent of a
+// real five-hour window in under 20 minutes during an unattended overnight
+// test, before this cooldown existed.
+func TestCandidates_PausedBudget_RespectsRetryCooldown(t *testing.T) {
+	q, s := newTestQueue(t)
+	ctx := context.Background()
+
+	paused := minimalJob()
+	pausedJob, err := q.Enqueue(ctx, paused)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, pausedJob.ID, store.StatusPausedBudget, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Immediately after (well within the cooldown): excluded.
+	got, err := q.Candidates(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("Candidates() error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Candidates() immediately after pausing = %+v, want empty (still within PausedBudgetRetryCooldown)", got)
+	}
+
+	// Just short of the cooldown: still excluded.
+	got, err = q.Candidates(ctx, time.Now().Add(PausedBudgetRetryCooldown-time.Second))
+	if err != nil {
+		t.Fatalf("Candidates() error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Candidates() just under the cooldown = %+v, want still empty", got)
+	}
+
+	// Past the cooldown: eligible again.
+	got, err = q.Candidates(ctx, time.Now().Add(PausedBudgetRetryCooldown+time.Second))
+	if err != nil {
+		t.Fatalf("Candidates() error: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != pausedJob.ID {
+		t.Errorf("Candidates() past the cooldown = %+v, want [%s]", got, pausedJob.ID)
 	}
 }
 

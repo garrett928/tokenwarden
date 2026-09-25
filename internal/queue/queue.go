@@ -36,6 +36,34 @@ var ErrNotRunnable = errors.New("job is not in a dispatchable state")
 // is strategy 3's job, not this one's.
 var ErrNoSteps = errors.New("job has no steps to promote")
 
+// PausedBudgetRetryCooldown is the minimum time a PausedBudget job must sit
+// since its last status change before Candidates offers it for dispatch
+// again. Found necessary live: without this, a PausedBudget job is a valid
+// Candidates entry every tick (REQUIREMENTS.md §6.4 strategy 1's "resumes
+// next window" is aspirational, not enforced anywhere else), so a job whose
+// MaxBudgetUSD is too tight to ever finish in one dispatch gets
+// re-dispatched roughly every TickInterval (30s), spending up to its cap
+// again each time — real, repeated, unbounded-by-anything-except-the-cap
+// spend, observed burning double-digit percent of a real five-hour window
+// in under 20 minutes during an unattended overnight test. This doesn't
+// solve the harder question of what the *right* resume cadence is relative
+// to actual freed-up headroom (that's still open) — it just stops the
+// specific, confirmed failure mode of immediate, unthrottled retry. It also
+// doesn't distinguish a job the scheduler itself capped to fit remaining
+// headroom (§6.4 strategy 1) from one paused because a user-set MaxBudgetUSD
+// was simply too tight — both cool down the same way; splitting that apart
+// is future work if it turns out to matter.
+//
+// Testing note: this compares against a caller-supplied `now`, but
+// store.Job.UpdatedAt is always stamped with real wall-clock time (no Clock
+// seam exists below internal/scheduler) — so a scheduler test driving
+// Engine.Tick via SimClock can never observe the cooldown actually expiring
+// (simulated time and real UpdatedAt never converge). The cooldown itself is
+// unit-tested directly against internal/queue (real time), not integrated
+// through Engine.Tick; see internal/queue/queue_test.go's
+// TestCandidates_PausedBudget_RespectsRetryCooldown.
+const PausedBudgetRetryCooldown = 5 * time.Minute
+
 // Queue wraps a *store.Store with job lifecycle rules.
 type Queue struct {
 	store *store.Store
@@ -145,6 +173,12 @@ func (q *Queue) PromoteReady(ctx context.Context) (int, error) {
 // status, a safe no-op. The scheduler walks this full list, rather than
 // just the first entry, so a top candidate that doesn't fit remaining
 // headroom can be deferred in favor of the next-best one (§6.2 step 7).
+//
+// A PausedBudget job is held back until PausedBudgetRetryCooldown has
+// passed since its UpdatedAt (see that constant's doc comment for why) —
+// unlike DeferredOversized, it's excluded rather than re-evaluated and
+// no-op'd, since dispatching it is never a no-op: it always spends real
+// budget up to its cap again.
 func (q *Queue) Candidates(ctx context.Context, now time.Time) ([]store.Job, error) {
 	jobs, err := q.store.ListJobs(ctx, store.ListFilter{Statuses: []store.Status{store.StatusQueued, store.StatusPausedBudget, store.StatusDeferredOversized}})
 	if err != nil {
@@ -154,6 +188,9 @@ func (q *Queue) Candidates(ctx context.Context, now time.Time) ([]store.Job, err
 	var runnable []store.Job
 	for _, j := range jobs {
 		if j.EarliestAt != nil && j.EarliestAt.After(now) {
+			continue
+		}
+		if j.Status == store.StatusPausedBudget && now.Sub(j.UpdatedAt) < PausedBudgetRetryCooldown {
 			continue
 		}
 		runnable = append(runnable, j)
