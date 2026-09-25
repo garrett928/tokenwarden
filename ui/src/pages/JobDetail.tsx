@@ -5,6 +5,11 @@ import LoadingState from '../components/LoadingState'
 import ErrorState from '../components/ErrorState'
 import StatusBadge from '../components/StatusBadge'
 
+// JobDetailPollMs is how often the page re-fetches a job that's still
+// in-flight (running/queued), so a dispatch completing or a queued job
+// starting shows up without a manual Refresh.
+const JobDetailPollMs = 3000
+
 export default function JobDetail({ id }: { id: string }) {
   const [job, setJob] = useState<JobResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -30,6 +35,33 @@ export default function JobDetail({ id }: { id: string }) {
     }
     fetchJob()
   }, [id])
+
+  // Poll for updates while the job is still in-flight, so a dispatch
+  // completing or a queued job starting shows up without a manual Refresh.
+  // This is a silent background poll: it must not touch loading/error state
+  // (no spinner flicker, and a transient poll failure must never replace an
+  // already-loaded job with an error page).
+  useEffect(() => {
+    if (!job) return
+    if (job.status !== 'running' && job.status !== 'queued') return
+
+    let cancelled = false
+    const interval = setInterval(() => {
+      getJob(id)
+        .then((data) => {
+          if (!cancelled) setJob(data)
+        })
+        .catch(() => {
+          // Silently ignore transient poll failures.
+        })
+    }, JobDetailPollMs)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, job?.status])
 
   const handleRefresh = async () => {
     setLoading(true)
