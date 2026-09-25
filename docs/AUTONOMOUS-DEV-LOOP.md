@@ -129,16 +129,35 @@ changing this document.
   `git log --oneline -1 origin/main` before the first commit —
   `SUBAGENT-WORKFLOW.md`'s closing section documents exactly how a branch
   cut from the wrong parent slipped through before.
-- Commit, push, open the PR with `gh pr create`, then use the `ccd_pr`
-  tools (`bind_pr`, `get_status`) to read CI — never hand-rolled polling via
+- Commit, push, open the PR with `gh pr create`, then use the `ccd_pr` tools
+  (`bind_pr`, `get_status`) to read CI — never hand-rolled polling via
   `gh pr checks` in a sleep loop, and never `CronCreate`/`ScheduleWakeup`
   from inside `/dev-cycle` itself for this; the wrapping `/loop` session's
   own pacing covers it.
-- **Auto-merge is enabled** (`ccd_pr`'s `set_auto_merge`) once CI is green.
-  This is the one piece of this loop that's a deliberate, explicit
-  exception to "ask before enabling auto-merge every time" — the user
-  authorized it specifically for this loop's design, not as a standing
-  blanket permission for anything else this project does.
+- **Merging is a direct `gh pr merge --squash` once CI is green — not
+  GitHub's own auto-merge feature.** This was tried both ways on real PRs
+  and GitHub's `set_auto_merge` genuinely doesn't work on this repo as
+  configured: it refuses ("Pull request is in clean status") once every
+  check has already passed, and it *also* refuses ("Pull request is in
+  unstable status") while checks are still pending, because `main` has no
+  branch protection rule with required status checks — without one,
+  GitHub's auto-merge has no well-defined "pending → will become mergeable"
+  state to attach to. The fix for that is configuring branch protection on
+  `main`, which the user was asked about and **declined** — deliberately
+  keeping `main` unprotected rather than adding a rule whose scope (does it
+  also add required reviews? force-push protection?) wasn't otherwise being
+  decided today. Revisit only if the user asks for it; don't set up branch
+  protection unilaterally to make auto-merge "really" work.
+- What "auto-merge" means in practice for this loop, then, is: the
+  merge itself is unattended (no human clicks anything), not that it uses
+  GitHub's literal auto-merge feature. Once `get_status` reports checks all
+  passing and `mergeable: "MERGEABLE"`, merge directly — no further
+  confirmation needed for this specific action, per the same authorization
+  as below.
+- **This — merging without asking each time — is the one piece of this loop
+  that's a deliberate, explicit exception to "ask before merging every
+  time"** — the user authorized it specifically for this loop's design, not
+  as a standing blanket permission for anything else this project does.
 - If CI comes back red: one Sonnet fix attempt against the actual CI log,
   push, re-check. If still red after that one retry, stop
   (`STOPPED: CI failing after one fix attempt on PR #<n>`) rather than

@@ -50,14 +50,20 @@ Then, in order:
    bump "Last updated" to today, note what shipped. This is real project
    state and nobody else will update it.
 
-8. **Commit, push, open the PR** (`gh pr create`), then use the `ccd_pr`
-   tools (`bind_pr`, `get_status`) to read CI — never poll with raw `gh`
-   commands or your own sleep loop. On red CI: one Sonnet fix attempt against
-   the actual failure log, push, recheck once. Still red: stop:
+8. **Commit, push, open the PR** (`gh pr create`), then use `ccd_pr`'s
+   `bind_pr`/`get_status` to read CI — never poll with raw `gh` commands or
+   your own sleep loop. On red CI: one Sonnet fix attempt against the actual
+   failure log, push, recheck once. Still red: stop:
    `STOPPED: CI failing after one fix attempt on PR #<n>`.
 
-9. **On green CI, enable auto-merge** via `ccd_pr`'s `set_auto_merge` — this
-   is the one standing exception documented in `AUTONOMOUS-DEV-LOOP.md`;
+9. **On green CI, merge directly: `gh pr merge --squash`.** Do NOT use
+   `ccd_pr`'s `set_auto_merge` — it was tried and genuinely doesn't work on
+   this repo (`main` has no branch protection / required status checks,
+   deliberately, per the user; without one, GitHub's auto-merge API refuses
+   both an already-green PR and a still-pending one). A direct merge once
+   `get_status` reports all checks passing and `mergeable: "MERGEABLE"` is
+   the real mechanism — merging without asking each time is the one standing
+   exception to "ask before merging" documented in `AUTONOMOUS-DEV-LOOP.md`;
    don't ask for confirmation, it was already given for this specific loop.
 
 10. End your turn with exactly one status line, nothing else after it:
