@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git checkout:*)",
+      "Bash(git pull)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git log:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh auth status)",
+      "Bash(task build)",
+      "Bash(task test)",
+      "Bash(task lint)",
+      "Bash(task ui:build)",
+      "Bash(task ui:lint)"
+    ]
+  }
+}
