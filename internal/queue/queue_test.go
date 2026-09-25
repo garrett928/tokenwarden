@@ -827,6 +827,84 @@ func TestCandidates_IncludesPausedBudget(t *testing.T) {
 	}
 }
 
+func TestCandidates_IncludesDeferredOversized(t *testing.T) {
+	q, s := newTestQueue(t)
+	ctx := context.Background()
+
+	deferred := minimalJob()
+	deferred.Priority = 5
+	deferredJob, err := q.Enqueue(ctx, deferred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, deferredJob.ID, store.StatusDeferredOversized, "exceeds remaining headroom"); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh := minimalJob()
+	fresh.Priority = 1
+	freshJob, err := q.Enqueue(ctx, fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := q.Candidates(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("Candidates() error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Candidates() returned %d jobs, want 2 (got %+v)", len(got), got)
+	}
+	// A deferral was never meant to be forever: a DeferredOversized job is
+	// re-surfaced as a candidate on every tick, same priority ordering as
+	// any other runnable status.
+	if got[0].ID != deferredJob.ID {
+		t.Errorf("Candidates()[0] = %s, want the higher-priority deferred_oversized job %s", got[0].ID, deferredJob.ID)
+	}
+	if got[1].ID != freshJob.ID {
+		t.Errorf("Candidates()[1] = %s, want %s", got[1].ID, freshJob.ID)
+	}
+}
+
+func TestCandidates_DeferredOversized_RespectsEarliestAt(t *testing.T) {
+	q, s := newTestQueue(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	future := now.Add(time.Hour)
+	notYet := minimalJob()
+	notYet.Priority = 100 // highest priority, but not eligible yet
+	notYet.EarliestAt = &future
+	notYetJob, err := q.Enqueue(ctx, notYet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, notYetJob.ID, store.StatusDeferredOversized, "exceeds remaining headroom"); err != nil {
+		t.Fatal(err)
+	}
+
+	ready := minimalJob()
+	ready.Priority = 1
+	readyJob, err := q.Enqueue(ctx, ready)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, readyJob.ID, store.StatusDeferredOversized, "exceeds remaining headroom"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := q.Candidates(ctx, now)
+	if err != nil {
+		t.Fatalf("Candidates() error: %v", err)
+	}
+	// The EarliestAt filter applies uniformly regardless of status: a
+	// DeferredOversized job whose EarliestAt hasn't passed is skipped just
+	// like a Queued or PausedBudget one would be.
+	if len(got) != 1 || got[0].ID != readyJob.ID {
+		t.Errorf("Candidates() = %+v, want only the eligible deferred_oversized job %s", got, readyJob.ID)
+	}
+}
+
 func TestCapBudget_SetsMaxBudget(t *testing.T) {
 	q, _ := newTestQueue(t)
 	ctx := context.Background()
@@ -925,6 +1003,65 @@ func TestDeferOversized_FromQueued(t *testing.T) {
 	}
 }
 
+func TestDeferOversized_AlreadySameReason_NoOp(t *testing.T) {
+	q, _ := newTestQueue(t)
+	ctx := context.Background()
+
+	j, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const reason = "exceeds remaining 5h headroom even empty"
+	if err := q.DeferOversized(ctx, j.ID, reason); err != nil {
+		t.Fatalf("DeferOversized() error: %v", err)
+	}
+	first, err := q.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-defer with the identical reason, as Candidates re-surfacing a
+	// still-oversized job on every tick would do — this should be a
+	// short-circuited no-op rather than rewriting the same status+reason.
+	if err := q.DeferOversized(ctx, j.ID, reason); err != nil {
+		t.Fatalf("DeferOversized() (repeat) error: %v", err)
+	}
+	second, err := q.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.UpdatedAt.Equal(first.UpdatedAt) {
+		t.Errorf("UpdatedAt changed on a same-reason re-defer: %v -> %v, want no write", first.UpdatedAt, second.UpdatedAt)
+	}
+}
+
+func TestDeferOversized_DifferentReason_StillWrites(t *testing.T) {
+	q, _ := newTestQueue(t)
+	ctx := context.Background()
+
+	j, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.DeferOversized(ctx, j.ID, "exceeds remaining headroom (need $2.00, have $0.50)"); err != nil {
+		t.Fatalf("DeferOversized() error: %v", err)
+	}
+
+	// A different reason (e.g. the specific headroom numbers changed) is a
+	// real state change and must still be recorded, not short-circuited.
+	const newReason = "exceeds remaining headroom (need $2.00, have $0.10)"
+	if err := q.DeferOversized(ctx, j.ID, newReason); err != nil {
+		t.Fatalf("DeferOversized() (new reason) error: %v", err)
+	}
+	got, err := q.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FailureReason != newReason {
+		t.Errorf("FailureReason = %q, want %q", got.FailureReason, newReason)
+	}
+}
+
 func TestDeferOversized_AlreadyTerminal_Errors(t *testing.T) {
 	q, s := newTestQueue(t)
 	ctx := context.Background()
@@ -976,6 +1113,30 @@ func TestMarkRunning_FromPausedBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.UpdateStatus(ctx, j.ID, store.StatusPausedBudget, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := q.MarkRunning(ctx, j.ID); err != nil {
+		t.Fatalf("MarkRunning() error: %v", err)
+	}
+	got, err := q.Get(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusRunning)
+	}
+}
+
+func TestMarkRunning_FromDeferredOversized(t *testing.T) {
+	q, s := newTestQueue(t)
+	ctx := context.Background()
+
+	j, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, j.ID, store.StatusDeferredOversized, "exceeds remaining headroom"); err != nil {
 		t.Fatal(err)
 	}
 

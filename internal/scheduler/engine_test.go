@@ -387,6 +387,111 @@ func TestTick_OversizedJob_DefersAndDispatchesNextBestCandidate(t *testing.T) {
 	}
 }
 
+// TestTick_PreviouslyDeferredJob_DispatchesOnceHeadroomFrees covers the
+// other half of §6.4 strategy 4 that
+// TestTick_OversizedJob_DefersAndDispatchesNextBestCandidate doesn't: a
+// deferral isn't forever. Candidates and MarkRunning both had to change to
+// make a DeferredOversized job reachable again (see the internal/queue.go
+// diff on this branch) — Candidates has to list it on a later tick, and
+// MarkRunning has to accept it as a dispatch source once FitJob decides it
+// now fits. Before that change, a deferred job would never reappear in
+// Candidates at all; even patched into Candidates alone, dispatching it
+// would fail with queue.ErrNotRunnable from MarkRunning's status guard. This
+// test drives both halves through Engine.Tick exactly as production code
+// would exercise them, rather than calling queue.Candidates/MarkRunning
+// directly.
+func TestTick_PreviouslyDeferredJob_DispatchesOnceHeadroomFrees(t *testing.T) {
+	te := newTestEngine(t, time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC))
+	ctx := context.Background()
+	start := te.clock.Now()
+
+	if err := te.store.UpdateSchedulerConfig(ctx, store.SchedulerConfig{Enabled: true, Aggressiveness: 80}); err != nil {
+		t.Fatal(err)
+	}
+	last := seedFittingData(t, te, start)
+	te.clock.Set(last.Add(time.Minute)) // ground truth still fresh; 76% used, only 2% headroom
+
+	// Not Resumable and no Steps, same as the existing oversized-job test's
+	// "big" job: the only strategy that can apply is defer (strategy 4).
+	big := store.Job{Kind: store.JobKindResearch, Prompt: "oversized", Priority: 10}
+	bigJob, err := te.queue.Enqueue(ctx, big)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Tick 1: the only candidate doesn't fit remaining headroom, so it's
+	// deferred and nothing dispatches this tick.
+	got, err := te.engine.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick() 1 error: %v", err)
+	}
+	if got.Dispatched {
+		t.Fatalf("Tick 1 Dispatched = true (job %q), want false — the only candidate should have deferred", got.JobID)
+	}
+	if len(got.DeferredJobIDs) != 1 || got.DeferredJobIDs[0] != bigJob.ID {
+		t.Fatalf("Tick 1 DeferredJobIDs = %v, want [%s]", got.DeferredJobIDs, bigJob.ID)
+	}
+
+	deferred, err := te.queue.Get(ctx, bigJob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deferred.Status != store.StatusDeferredOversized {
+		t.Fatalf("job Status = %q, want %q", deferred.Status, store.StatusDeferredOversized)
+	}
+
+	// Advance past the five-hour window's reset and record a fresh ground
+	// truth reading showing it emptied out, the same pattern
+	// TestTick_FiveHourCeilingReached_HoldsOff uses to simulate "now there's
+	// room." The new reading carries a new FiveHourResetsAt, so — per the
+	// comment in TestTick_PromotedStepChain_AdvancesWithInheritedSession —
+	// calibration ignores the pair as a rollover rather than treating it as
+	// spend, leaving TokensPerPercent (and so the research job's ~5%
+	// prediction) unchanged; only the *used* percentage the ceiling check
+	// and FitJob compare against has dropped.
+	resetsAt := start.Add(5 * time.Hour)
+	sevenDayResetsAt := start.Add(3 * 24 * time.Hour)
+	te.clock.Set(resetsAt.Add(time.Minute))
+	ledger := budget.New(te.store)
+	if err := ledger.RecordGroundTruth(ctx, budget.GroundTruthReading{
+		FiveHourUsedPercentage: 0,
+		FiveHourResetsAt:       resetsAt.Add(5 * time.Hour),
+		SevenDayUsedPercentage: 76,
+		SevenDayResetsAt:       sevenDayResetsAt,
+		ObservedAt:             te.clock.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tick 2: remaining headroom is now huge (78% ceiling - 0% used), so the
+	// previously-deferred job's ~5% prediction fits and it dispatches as-is
+	// — this is the exact path (Candidates re-listing it, then MarkRunning
+	// accepting a DeferredOversized status) that a regression of either half
+	// of the fix would break: without the Candidates change the job would
+	// never be considered; without the MarkRunning change FitJob's
+	// FitDispatch verdict would still flow into dispatch.DispatchOne, which
+	// would fail (queue.ErrNotRunnable) trying to mark it Running.
+	t.Setenv("FAKECLAUDE_FIXTURE", "happy_path")
+	got, err = te.engine.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick() 2 error: %v", err)
+	}
+	if !got.Dispatched || got.JobID != bigJob.ID {
+		t.Fatalf("Tick 2 dispatched job %q (dispatched=%v), want the previously-deferred job %q", got.JobID, got.Dispatched, bigJob.ID)
+	}
+	if len(got.DeferredJobIDs) != 0 {
+		t.Errorf("Tick 2 DeferredJobIDs = %v, want none (headroom freed, so it should dispatch, not defer again)", got.DeferredJobIDs)
+	}
+
+	dispatched, err := te.queue.Get(ctx, bigJob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dispatched.Status != store.StatusSucceeded {
+		t.Errorf("previously-deferred job Status = %q, want succeeded", dispatched.Status)
+	}
+}
+
 // TestTick_OversizedResumableJob_CapsBudgetAndDispatches covers §6.4
 // strategy 1: a top-priority candidate that doesn't fit remaining headroom
 // but is Resumable gets its budget capped to that headroom and dispatched
