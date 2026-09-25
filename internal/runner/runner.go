@@ -61,6 +61,18 @@ func (r *Runner) Run(ctx context.Context, job store.Job, opts RunOptions) (Resul
 	}
 
 	cmd := exec.CommandContext(ctx, r.claudeBinary, args...)
+	// job.Workspace is required for JobKindCode (profileFor) specifically so
+	// --worktree has somewhere to create its worktree from, and is passed
+	// through as --add-dir input for other kinds' attachments — but none of
+	// that means anything if the subprocess doesn't actually run there.
+	// Without this, every job ran in whatever directory tokenwardend itself
+	// happened to be started from, regardless of its own declared
+	// Workspace — silently defeating the worktree isolation FR-SAFE-2
+	// requires for unattended jobs. A job with no Workspace keeps the
+	// current process's own working directory, exactly as before.
+	if job.Workspace != "" {
+		cmd.Dir = job.Workspace
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
