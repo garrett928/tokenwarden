@@ -130,17 +130,23 @@ func (q *Queue) PromoteReady(ctx context.Context) (int, error) {
 	return promoted, errors.Join(errs...)
 }
 
-// Candidates returns every Queued or PausedBudget job whose EarliestAt (if
-// any) has passed as of now, in the store's existing priority order
-// (highest first, then oldest-created first). PausedBudget jobs are
-// included alongside Queued ones because MarkRunning already accepts both
-// as a dispatch source (a budget-capped job resuming next window is just as
-// runnable as a fresh one) — see §6.4 strategy 1. The scheduler walks this
-// full list, rather than just the first entry, so a top candidate that
-// doesn't fit remaining headroom can be deferred in favor of the next-best
-// one (§6.2 step 7).
+// Candidates returns every Queued, PausedBudget, or DeferredOversized job
+// whose EarliestAt (if any) has passed as of now, in the store's existing
+// priority order (highest first, then oldest-created first). PausedBudget
+// jobs are included alongside Queued ones because MarkRunning already
+// accepts both as a dispatch source (a budget-capped job resuming next
+// window is just as runnable as a fresh one) — see §6.4 strategy 1.
+// DeferredOversized jobs are included too, and re-evaluated on every tick
+// exactly like a fresh Queued job: Status.Terminal() is explicitly false for
+// DeferredOversized (see internal/store/job.go), meaning a deferral was
+// never meant to be forever — the headroom that didn't fit it when it was
+// deferred (e.g. before the 5-hour window reset) may exist by a later tick.
+// If it still doesn't fit, FitJob/DeferOversized simply re-write the same
+// status, a safe no-op. The scheduler walks this full list, rather than
+// just the first entry, so a top candidate that doesn't fit remaining
+// headroom can be deferred in favor of the next-best one (§6.2 step 7).
 func (q *Queue) Candidates(ctx context.Context, now time.Time) ([]store.Job, error) {
-	jobs, err := q.store.ListJobs(ctx, store.ListFilter{Statuses: []store.Status{store.StatusQueued, store.StatusPausedBudget}})
+	jobs, err := q.store.ListJobs(ctx, store.ListFilter{Statuses: []store.Status{store.StatusQueued, store.StatusPausedBudget, store.StatusDeferredOversized}})
 	if err != nil {
 		return nil, fmt.Errorf("listing queued jobs: %w", err)
 	}
@@ -185,19 +191,23 @@ func (q *Queue) Cancel(ctx context.Context, id string) error {
 	return q.store.UpdateStatus(ctx, id, store.StatusCancelled, "cancelled by user")
 }
 
-// MarkRunning transitions a Queued or PausedBudget job to Running and
-// returns the job as it stood just before the transition (so the caller —
-// internal/dispatch — has SessionID/Resumable/etc. to build a run from).
-// It is the only entry point that puts a job into Running, and it names
-// the job explicitly rather than picking one: nothing here selects, loops,
-// or retries on its own. See internal/dispatch for the "dispatch this one
-// job now" primitive this backs.
+// MarkRunning transitions a Queued, PausedBudget, or DeferredOversized job
+// to Running and returns the job as it stood just before the transition (so
+// the caller — internal/dispatch — has SessionID/Resumable/etc. to build a
+// run from). DeferredOversized is accepted alongside the other two because
+// Candidates now re-surfaces a previously-deferred job on every tick (see
+// Candidates' doc comment); if FitJob decides such a job now fits, Tick
+// dispatches it the same way as a freshly-Queued one, which routes through
+// here. It is the only entry point that puts a job into Running, and it
+// names the job explicitly rather than picking one: nothing here selects,
+// loops, or retries on its own. See internal/dispatch for the "dispatch
+// this one job now" primitive this backs.
 func (q *Queue) MarkRunning(ctx context.Context, id string) (store.Job, error) {
 	j, err := q.store.GetJob(ctx, id)
 	if err != nil {
 		return store.Job{}, err
 	}
-	if j.Status != store.StatusQueued && j.Status != store.StatusPausedBudget {
+	if j.Status != store.StatusQueued && j.Status != store.StatusPausedBudget && j.Status != store.StatusDeferredOversized {
 		return store.Job{}, fmt.Errorf("%w: job %s is %s", ErrNotRunnable, id, j.Status)
 	}
 	if err := q.store.UpdateStatus(ctx, id, store.StatusRunning, ""); err != nil {
@@ -255,10 +265,22 @@ func (q *Queue) CapBudget(ctx context.Context, id string, usdCap float64) error 
 // recording why it couldn't be fit into remaining headroom (REQUIREMENTS.md
 // §6.4 step 4). Like Cancel, deferring an already-terminal job is an error
 // rather than a silent no-op.
+//
+// If the job is already DeferredOversized with this exact reason, this is a
+// no-op: Candidates now re-surfaces a DeferredOversized job on every tick
+// (see its doc comment), so a job that keeps not fitting would otherwise get
+// the same status+reason rewritten — bumping updated_at and adding a
+// TickResult.DeferredJobIDs entry — every single tick for no real state
+// change. A job deferred with a *different* reason than before (e.g. the
+// specific headroom numbers changed) still gets written, since that is a
+// real state change worth recording.
 func (q *Queue) DeferOversized(ctx context.Context, id, reason string) error {
 	j, err := q.store.GetJob(ctx, id)
 	if err != nil {
 		return err
+	}
+	if j.Status == store.StatusDeferredOversized && j.FailureReason == reason {
+		return nil
 	}
 	if j.Status.Terminal() {
 		return fmt.Errorf("%w: job %s is already %s", ErrAlreadyTerminal, id, j.Status)

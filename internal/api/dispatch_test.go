@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -47,6 +48,16 @@ func TestMain(m *testing.M) {
 
 func newDispatchTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	srv, _ := newDispatchTestServerWithStore(t)
+	return srv
+}
+
+// newDispatchTestServerWithStore is newDispatchTestServer plus the
+// underlying *store.Store, for tests that need to seed a job into a status
+// unreachable via the public API (e.g. DeferredOversized, which only the
+// scheduler ever produces).
+func newDispatchTestServerWithStore(t *testing.T) (*httptest.Server, *store.Store) {
+	t.Helper()
 	s, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("store.Open() error: %v", err)
@@ -59,7 +70,7 @@ func newDispatchTestServer(t *testing.T) *httptest.Server {
 
 	srv := httptest.NewServer(NewServer(s, q, d, l))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, s
 }
 
 // pollUntilTerminal polls GET /api/jobs/{id} until the job reaches a
@@ -120,6 +131,37 @@ func TestDispatchJob_NotFound(t *testing.T) {
 	resp := postJSON(t, srv.URL+"/api/jobs/job_nonexistent/dispatch", nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestDispatchJob_FromDeferredOversized covers the behavior change on this
+// branch: Candidates/MarkRunning now accept a DeferredOversized job as a
+// dispatch source (a deferral isn't forever — see internal/queue.go's
+// Candidates doc comment), so a manual dispatch of such a job should
+// succeed instead of the pre-change 409 (queue.ErrNotRunnable).
+func TestDispatchJob_FromDeferredOversized(t *testing.T) {
+	t.Setenv("FAKECLAUDE_FIXTURE", "happy_path")
+	srv, s := newDispatchTestServerWithStore(t)
+
+	created := decode[JobResponse](t, postJSON(t, srv.URL+"/api/jobs", CreateJobRequest{
+		Kind: "research", Prompt: "say pong",
+	}))
+	if err := s.UpdateStatus(context.Background(), created.ID, store.StatusDeferredOversized, "exceeds remaining headroom"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, srv.URL+"/api/jobs/"+created.ID+"/dispatch", nil)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("dispatch status = %d, want 202", resp.StatusCode)
+	}
+	accepted := decode[JobResponse](t, resp)
+	if accepted.Status != string(store.StatusRunning) {
+		t.Errorf("immediate response Status = %q, want %q", accepted.Status, store.StatusRunning)
+	}
+
+	final := pollUntilTerminal(t, srv, created.ID)
+	if final.Status != string(store.StatusSucceeded) {
+		t.Errorf("final Status = %q, want %q", final.Status, store.StatusSucceeded)
 	}
 }
 
