@@ -2,6 +2,8 @@
 
 Budget-aware scheduler for Claude Code work. See [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) for the full spec, [`docs/SPIKE-001-usage-telemetry.md`](docs/SPIKE-001-usage-telemetry.md) for the research that shaped the architecture, and [`docs/SUBAGENT-WORKFLOW.md`](docs/SUBAGENT-WORKFLOW.md) for lessons learned running multi-agent implement/test/review pipelines on this codebase — read it before spinning up subagents for the next nontrivial slice.
 
+There is also a fully autonomous version of that pipeline — no human checkpoint at all, cost-controlled model tiering, auto-merge — documented in [`docs/AUTONOMOUS-DEV-LOOP.md`](docs/AUTONOMOUS-DEV-LOOP.md) and invoked as `/loop dev-cycle` from a Claude Code session with this repo as its working directory. It works the same Handoff backlog below. Not running by default — someone has to start it.
+
 **Picking up this project in a new session? Read the "Handoff" section at the bottom of this file first** — it has exact next actions on two open PRs and a prioritized backlog, so you don't have to reconstruct project state from git history.
 
 ## Module layout

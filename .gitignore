@@ -32,8 +32,16 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Claude Code tooling scaffolding (e.g. isolated agent worktrees)
-.claude/
+# Claude Code tooling scaffolding (e.g. isolated agent worktrees) —
+# except committed project slash commands and the shared permission
+# allowlist, which are part of the repo. settings.local.json (personal,
+# per-machine overrides) stays ignored.
+# (A parent-directory exclude can't be re-included by a child `!` rule, so
+# this excludes .claude/'s direct children individually instead of the
+# directory itself.)
+.claude/*
+!.claude/commands/
+!.claude/settings.json
 
 # Secrets — nothing here should ever exist, but belt and braces
 .env
