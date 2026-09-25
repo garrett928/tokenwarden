@@ -224,3 +224,106 @@ func TestBuildArgs_ArgvReachesSubprocess(t *testing.T) {
 		t.Errorf("subprocess argv = %v, want %v (BuildArgs output)", payload.Argv, wantArgs)
 	}
 }
+
+// TestRun_UsesJobWorkspaceAsWorkingDirectory closes a different gap than
+// TestBuildArgs_ArgvReachesSubprocess above: Workspace never appears in argv
+// at all (BuildArgs doesn't consume it directly — profileFor only checks
+// it's non-empty for JobKindCode), so a subprocess actually running in the
+// right directory can only be verified by checking its real cwd, not its
+// argv.
+func TestRun_UsesJobWorkspaceAsWorkingDirectory(t *testing.T) {
+	t.Setenv("FAKECLAUDE_FIXTURE", "echoargs")
+	r := New(fakeClaudeBin)
+
+	wantDir := t.TempDir()
+	// macOS's default TMPDIR resolves through a symlink (/var/folders/... ->
+	// /private/var/folders/...); os.Getwd() inside the subprocess returns
+	// the resolved path, so compare against the resolved form of wantDir
+	// too, or a real difference would be masked by a spurious symlink
+	// mismatch.
+	wantResolved, err := filepath.EvalSymlinks(wantDir)
+	if err != nil {
+		t.Fatalf("resolving symlinks for %s: %v", wantDir, err)
+	}
+
+	job := store.Job{Kind: store.JobKindResearch, Prompt: "say pong", Model: "haiku", Workspace: wantDir}
+
+	var debugEvent *UnknownEvent
+	_, runErr := r.Run(context.Background(), job, RunOptions{
+		OnEvent: func(e Event) {
+			if ue, ok := e.(UnknownEvent); ok && ue.Type == "debug_argv" {
+				debugEvent = &ue
+			}
+		},
+	})
+	if !errors.Is(runErr, ErrNoResultEvent) {
+		t.Fatalf("Run() error = %v, want ErrNoResultEvent (echoargs emits no result event)", runErr)
+	}
+	if debugEvent == nil {
+		t.Fatal("did not receive a debug_argv event from the subprocess")
+	}
+
+	var payload struct {
+		CWD string `json:"cwd"`
+	}
+	if err := json.Unmarshal(debugEvent.Raw, &payload); err != nil {
+		t.Fatalf("decoding debug_argv payload: %v", err)
+	}
+	gotResolved, err := filepath.EvalSymlinks(payload.CWD)
+	if err != nil {
+		t.Fatalf("resolving symlinks for reported cwd %s: %v", payload.CWD, err)
+	}
+	if gotResolved != wantResolved {
+		t.Errorf("subprocess cwd = %q (resolved %q), want job.Workspace %q (resolved %q)", payload.CWD, gotResolved, wantDir, wantResolved)
+	}
+}
+
+// TestRun_EmptyWorkspaceKeepsCurrentDirectory confirms a job with no
+// Workspace set doesn't force any particular directory — Run leaves cmd.Dir
+// unset, so the subprocess inherits the calling process's own working
+// directory, exactly as it did before Workspace was wired up at all.
+func TestRun_EmptyWorkspaceKeepsCurrentDirectory(t *testing.T) {
+	t.Setenv("FAKECLAUDE_FIXTURE", "echoargs")
+	r := New(fakeClaudeBin)
+
+	wantResolved, err := filepath.EvalSymlinks(mustGetwd(t))
+	if err != nil {
+		t.Fatalf("resolving symlinks for cwd: %v", err)
+	}
+
+	job := store.Job{Kind: store.JobKindResearch, Prompt: "say pong", Model: "haiku"}
+
+	var debugEvent *UnknownEvent
+	_, runErr := r.Run(context.Background(), job, RunOptions{
+		OnEvent: func(e Event) {
+			if ue, ok := e.(UnknownEvent); ok && ue.Type == "debug_argv" {
+				debugEvent = &ue
+			}
+		},
+	})
+	if !errors.Is(runErr, ErrNoResultEvent) {
+		t.Fatalf("Run() error = %v, want ErrNoResultEvent (echoargs emits no result event)", runErr)
+	}
+	if debugEvent == nil {
+		t.Fatal("did not receive a debug_argv event from the subprocess")
+	}
+
+	var payload struct {
+		CWD string `json:"cwd"`
+	}
+	if err := json.Unmarshal(debugEvent.Raw, &payload); err != nil {
+		t.Fatalf("decoding debug_argv payload: %v", err)
+	}
+	if payload.CWD != wantResolved {
+		t.Errorf("subprocess cwd = %q, want unchanged test-process cwd %q", payload.CWD, wantResolved)
+	}
+}
+
+func mustGetwd(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd(): %v", err)
+	}
+	return dir
+}
