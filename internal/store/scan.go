@@ -10,7 +10,7 @@ import (
 const jobSelectColumns = `SELECT
 	id, kind, prompt, workspace, model, effort,
 	attachments, steps, resumable, priority,
-	earliest_at, deadline_at, max_budget_usd, depends_on,
+	earliest_at, deadline_at, max_budget_usd, user_max_budget_usd, depends_on,
 	session_id, parent_job_id, status, failure_reason, result_text, created_at, updated_at,
 	permission_mode, allowed_tools, add_dirs, json_schema, freeform_worktree`
 
@@ -26,7 +26,7 @@ func scanJob(row rowScanner) (Job, error) {
 		kind, status                            string
 		attachmentsJSON, stepsJSON, dependsJSON string
 		earliestAt, deadlineAt                  sql.NullInt64
-		maxBudgetUSD                            sql.NullFloat64
+		maxBudgetUSD, userMaxBudgetUSD          sql.NullFloat64
 		createdAtUnix, updatedAtUnix            int64
 		allowedToolsJSON, addDirsJSON           string
 	)
@@ -34,7 +34,7 @@ func scanJob(row rowScanner) (Job, error) {
 	if err := row.Scan(
 		&j.ID, &kind, &j.Prompt, &j.Workspace, &j.Model, &j.Effort,
 		&attachmentsJSON, &stepsJSON, &j.Resumable, &j.Priority,
-		&earliestAt, &deadlineAt, &maxBudgetUSD, &dependsJSON,
+		&earliestAt, &deadlineAt, &maxBudgetUSD, &userMaxBudgetUSD, &dependsJSON,
 		&j.SessionID, &j.ParentJobID, &status, &j.FailureReason, &j.Result, &createdAtUnix, &updatedAtUnix,
 		&j.PermissionMode, &allowedToolsJSON, &addDirsJSON, &j.JSONSchema, &j.FreeformWorktree,
 	); err != nil {
@@ -73,6 +73,10 @@ func scanJob(row rowScanner) (Job, error) {
 	if maxBudgetUSD.Valid {
 		v := maxBudgetUSD.Float64
 		j.MaxBudgetUSD = &v
+	}
+	if userMaxBudgetUSD.Valid {
+		v := userMaxBudgetUSD.Float64
+		j.UserMaxBudgetUSD = &v
 	}
 
 	return j, nil

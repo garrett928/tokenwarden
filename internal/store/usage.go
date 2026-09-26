@@ -96,6 +96,27 @@ func (s *Store) RecordUsageIfNew(ctx context.Context, e UsageEntry) (inserted bo
 	return n > 0, nil
 }
 
+// JobCumulativeCost sums cost_usd across every usage_entries row recorded
+// for jobID so far, regardless of the job's current status. Unlike
+// CompletedJobUsageTotals (Succeeded/Failed jobs only, grouped by kind, for
+// cost *prediction*), this exists to enforce REQUIREMENTS.md's "hard
+// per-job spend ceiling" (--max-budget-usd) against a job that may still be
+// Running, Queued, or PausedBudget — a job resumed multiple times can have
+// each individual attempt land under its cap while the sum across attempts
+// blows past it, since the CLI's own --max-budget-usd check is scoped to
+// one invocation, not the job's lifetime. Returns 0, nil for a job with no
+// recorded usage yet (SUM over zero rows is NULL; COALESCE makes it 0).
+func (s *Store) JobCumulativeCost(ctx context.Context, jobID string) (float64, error) {
+	var total float64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(cost_usd), 0) FROM usage_entries WHERE job_id = ?
+	`, jobID).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("summing cumulative cost for job %s: %w", jobID, err)
+	}
+	return total, nil
+}
+
 // JobUsageTotal is one completed job's summed usage — the per-job
 // granularity internal/budget's cost predictor needs (REQUIREMENTS.md
 // §6.4: "a per-job cost predictor to decide a job is oversized").

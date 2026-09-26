@@ -48,3 +48,13 @@ func (l *Ledger) PredictJobCost(ctx context.Context, kind store.JobKind) (CostPr
 		Samples: len(totals),
 	}, nil
 }
+
+// JobCumulativeCost returns jobID's total recorded cost across every
+// dispatch/resume attempt so far, regardless of its current status. See
+// dispatch.RunJob's use of this: a per-dispatch MaxBudgetUSD check against
+// one result's own TotalCostUSD is not the same as enforcing
+// REQUIREMENTS.md's "hard per-job spend ceiling" once a job needs more than
+// one attempt to finish.
+func (l *Ledger) JobCumulativeCost(ctx context.Context, jobID string) (float64, error) {
+	return l.store.JobCumulativeCost(ctx, jobID)
+}

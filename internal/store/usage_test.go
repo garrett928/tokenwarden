@@ -36,6 +36,42 @@ func TestRecordUsage_RespectsExplicitRecordedAt(t *testing.T) {
 	}
 }
 
+func TestJobCumulativeCost_SumsAcrossMultipleAttempts(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	for _, cost := range []float64{0.13, 0.16, 0.20} {
+		if _, err := s.RecordUsage(ctx, UsageEntry{JobID: "job_x", CostUSD: cost}); err != nil {
+			t.Fatalf("RecordUsage() error: %v", err)
+		}
+	}
+	// A different job's usage must not bleed into job_x's total.
+	if _, err := s.RecordUsage(ctx, UsageEntry{JobID: "job_y", CostUSD: 100}); err != nil {
+		t.Fatalf("RecordUsage() error: %v", err)
+	}
+
+	got, err := s.JobCumulativeCost(ctx, "job_x")
+	if err != nil {
+		t.Fatalf("JobCumulativeCost() error: %v", err)
+	}
+	want := 0.13 + 0.16 + 0.20
+	if math.Abs(got-want) > 1e-9 {
+		t.Errorf("JobCumulativeCost() = %v, want %v", got, want)
+	}
+}
+
+func TestJobCumulativeCost_NoEntriesReturnsZero(t *testing.T) {
+	s := openTestStore(t)
+
+	got, err := s.JobCumulativeCost(context.Background(), "job_never_dispatched")
+	if err != nil {
+		t.Fatalf("JobCumulativeCost() error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("JobCumulativeCost() = %v, want 0 for a job with no usage_entries", got)
+	}
+}
+
 func TestCompletedJobUsageTotals_SumsPerJobAndScopesByKindAndStatus(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

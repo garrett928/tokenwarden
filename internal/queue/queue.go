@@ -287,6 +287,13 @@ func (q *Queue) Finish(ctx context.Context, id string, outcome FinishOutcome) er
 // REQUIREMENTS.md §6.4 strategy 1, budget-capped continuation. Like Cancel
 // and DeferOversized, capping an already-terminal job is an error rather
 // than a silent no-op.
+//
+// usdCap is clamped to the job's own UserMaxBudgetUSD when the user set
+// one: the scheduler may tighten a user's cap to fit a window's remaining
+// headroom, but must never loosen it past what the user actually asked for
+// — previously CapBudget wrote usdCap unconditionally, so a job capped
+// tightly in one window could get a *larger* cap in a later, roomier one
+// even if the user's own request was smaller (FR-SAFE-2).
 func (q *Queue) CapBudget(ctx context.Context, id string, usdCap float64) error {
 	j, err := q.store.GetJob(ctx, id)
 	if err != nil {
@@ -294,6 +301,9 @@ func (q *Queue) CapBudget(ctx context.Context, id string, usdCap float64) error 
 	}
 	if j.Status.Terminal() {
 		return fmt.Errorf("%w: job %s is already %s", ErrAlreadyTerminal, id, j.Status)
+	}
+	if j.UserMaxBudgetUSD != nil && *j.UserMaxBudgetUSD < usdCap {
+		usdCap = *j.UserMaxBudgetUSD
 	}
 	return q.store.UpdateJobMaxBudgetUSD(ctx, id, &usdCap)
 }
@@ -407,6 +417,11 @@ func (q *Queue) PromoteSteps(ctx context.Context, id string) ([]store.Job, error
 			AddDirs:          job.AddDirs,
 			FreeformWorktree: job.FreeformWorktree,
 			MaxBudgetUSD:     job.MaxBudgetUSD,
+			// UserMaxBudgetUSD inherits the parent's real, original lifetime
+			// intent (not derived from the parent's current, possibly
+			// scheduler-tightened MaxBudgetUSD above) — see that field's doc
+			// comment on store.Job for why the two must stay independent.
+			UserMaxBudgetUSD: job.UserMaxBudgetUSD,
 			Attachments:      job.Attachments,
 			JSONSchema:       job.JSONSchema,
 			DeadlineAt:       job.DeadlineAt,
