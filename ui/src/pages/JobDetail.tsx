@@ -6,8 +6,9 @@ import ErrorState from '../components/ErrorState'
 import StatusBadge from '../components/StatusBadge'
 
 // JobDetailPollMs is how often the page re-fetches a job that's still
-// in-flight (running/queued), so a dispatch completing or a queued job
-// starting shows up without a manual Refresh.
+// in-flight (running/queued/deferred_oversized), so a dispatch completing,
+// a queued job starting, or the scheduler re-queuing a deferred job once
+// headroom frees up shows up without a manual Refresh.
 const JobDetailPollMs = 3000
 
 export default function JobDetail({ id }: { id: string }) {
@@ -43,7 +44,8 @@ export default function JobDetail({ id }: { id: string }) {
   // already-loaded job with an error page).
   useEffect(() => {
     if (!job) return
-    if (job.status !== 'running' && job.status !== 'queued') return
+    if (job.status !== 'running' && job.status !== 'queued' && job.status !== 'deferred_oversized')
+      return
 
     let cancelled = false
     const interval = setInterval(() => {
@@ -108,7 +110,10 @@ export default function JobDetail({ id }: { id: string }) {
   // Button gating logic
   const isTerminal = ['succeeded', 'failed', 'cancelled', 'promoted'].includes(job?.status ?? '')
   const canCancel = !isTerminal
-  const canDispatch = job?.status === 'queued' || job?.status === 'paused_budget'
+  const canDispatch =
+    job?.status === 'queued' ||
+    job?.status === 'paused_budget' ||
+    job?.status === 'deferred_oversized'
 
   if (loading && !job) {
     return <LoadingState label="Loading job…" />
