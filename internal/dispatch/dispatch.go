@@ -115,6 +115,39 @@ func (d *Dispatcher) RunJob(ctx context.Context, job store.Job) error {
 		cancel()
 	}()
 
+	// A user-authored per-job spend cap has to hold across every attempt at
+	// this job, not just the one about to run: --max-budget-usd is enforced
+	// by the CLI per invocation, so a Resumable job that never finishes gets
+	// a fresh allowance every time it's --resume'd, and each individual
+	// attempt can land under the cap while the sum across attempts blows
+	// past it. Found live: a $0.02-capped job resumed automatically by the
+	// scheduler's PausedBudgetRetryCooldown 151 times over 23 hours, none of
+	// which individually looked wrong to isBudgetCutoff, for $359 in
+	// cumulative cost against a two-cent cap. Checked before spawning
+	// anything, so an already-exhausted job never spends another cent.
+	//
+	// Deliberately checks UserMaxBudgetUSD, never the plain MaxBudgetUSD
+	// above — queue.CapBudget (§6.4 strategy 1) can tighten MaxBudgetUSD to
+	// fit one window's remaining headroom, and that value goes stale the
+	// moment a later window gives the job enough room to just finish (it's
+	// never re-capped in that case, so the old smaller value would sit there
+	// looking like an exhausted lifetime budget and wrongly fail an
+	// otherwise-viable job). UserMaxBudgetUSD is set once at creation and
+	// never modified by anything else, so it's always the user's real,
+	// stable intent regardless of how the scheduler paces MaxBudgetUSD.
+	if job.UserMaxBudgetUSD != nil {
+		spent, err := d.ledger.JobCumulativeCost(ctx, job.ID)
+		if err != nil {
+			return fmt.Errorf("checking cumulative spend for job %s: %w", job.ID, err)
+		}
+		if spent >= *job.UserMaxBudgetUSD {
+			return d.queue.Finish(ctx, job.ID, queue.FinishOutcome{
+				Status:        store.StatusFailed,
+				FailureReason: fmt.Sprintf("exhausted MaxBudgetUSD ($%.4f cap): cumulative spend across prior attempts is already $%.4f — refusing to resume further", *job.UserMaxBudgetUSD, spent),
+			})
+		}
+	}
+
 	result, runErr := d.runner.Run(runCtx, job, runner.RunOptions{})
 	if runErr != nil {
 		// No Result was ever produced, so there's nothing for the ledger to

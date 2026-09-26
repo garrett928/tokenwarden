@@ -45,18 +45,25 @@ type CreateJobRequest struct {
 
 func (r CreateJobRequest) toJob() store.Job {
 	return store.Job{
-		Kind:             store.JobKind(r.Kind),
-		Prompt:           r.Prompt,
-		Workspace:        r.Workspace,
-		Model:            r.Model,
-		Effort:           r.Effort,
-		Attachments:      toStoreAttachments(r.Attachments),
-		Steps:            r.Steps,
-		Resumable:        r.Resumable,
-		Priority:         r.Priority,
-		EarliestAt:       r.EarliestAt,
-		DeadlineAt:       r.DeadlineAt,
-		MaxBudgetUSD:     r.MaxBudgetUSD,
+		Kind:         store.JobKind(r.Kind),
+		Prompt:       r.Prompt,
+		Workspace:    r.Workspace,
+		Model:        r.Model,
+		Effort:       r.Effort,
+		Attachments:  toStoreAttachments(r.Attachments),
+		Steps:        r.Steps,
+		Resumable:    r.Resumable,
+		Priority:     r.Priority,
+		EarliestAt:   r.EarliestAt,
+		DeadlineAt:   r.DeadlineAt,
+		MaxBudgetUSD: r.MaxBudgetUSD,
+		// UserMaxBudgetUSD always mirrors what the caller actually asked
+		// for at creation time — no separate wire field needed, since a
+		// new job's request-supplied cap IS the user's cap by definition.
+		// See store.Job.UserMaxBudgetUSD's doc comment for why this must
+		// stay independent of MaxBudgetUSD once queue.CapBudget can tighten
+		// the latter for scheduler pacing purposes.
+		UserMaxBudgetUSD: r.MaxBudgetUSD,
 		DependsOn:        r.DependsOn,
 		PermissionMode:   r.PermissionMode,
 		AllowedTools:     r.AllowedTools,

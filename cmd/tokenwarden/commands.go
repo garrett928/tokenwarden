@@ -236,6 +236,7 @@ func cmdUsage(args []string) error {
 	}
 
 	fmt.Println("(exact local ledger spend — not the plan's rate-limit window fill; see docs/REQUIREMENTS.md §6.1)")
+	fmt.Println("(cost below is an API-list-price-equivalent estimate, not necessarily what you're actually billed — a subscription plan's included usage isn't priced per token, so this number can run far ahead of real billing impact)")
 	printWindowUsage("Last 5 hours", u.FiveHour)
 	printWindowUsage("Last 7 days", u.SevenDay)
 	printGroundTruth(u.GroundTruth)

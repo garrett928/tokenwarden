@@ -121,7 +121,8 @@ export default function Dashboard() {
           </div>
         </div>
         <p className="muted" style={{ fontSize: '12px', margin: '4px 0 0 0' }}>
-          tokenwarden's tracked spend in this window
+          tokenwarden's tracked spend in this window — an API-list-price
+          estimate, not necessarily what a subscription plan actually bills
         </p>
       </div>
 
@@ -156,7 +157,8 @@ export default function Dashboard() {
           </div>
         </div>
         <p className="muted" style={{ fontSize: '12px', margin: '4px 0 0 0' }}>
-          tokenwarden's tracked spend in this window
+          tokenwarden's tracked spend in this window — an API-list-price
+          estimate, not necessarily what a subscription plan actually bills
         </p>
       </div>
 

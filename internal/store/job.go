@@ -103,11 +103,38 @@ type Job struct {
 	// primarily useful on JobKindResearch (FR-JOB-2, §4.2).
 	JSONSchema string
 
-	Priority     int
-	EarliestAt   *time.Time
-	DeadlineAt   *time.Time
+	Priority   int
+	EarliestAt *time.Time
+	DeadlineAt *time.Time
+	// MaxBudgetUSD is the CURRENT effective per-dispatch cap: what's
+	// actually passed as --max-budget-usd (internal/runner.BuildArgs) and
+	// checked against a single attempt's own reported cost
+	// (dispatch.isBudgetCutoff). CreateJob sets it from the user's own
+	// input; queue.CapBudget (§6.4 strategy 1) may tighten it afterward to
+	// fit a specific window's remaining headroom, and that value can go
+	// stale or change tick to tick as headroom does — it does NOT represent
+	// a stable lifetime intent once a job has needed scheduler capping.
 	MaxBudgetUSD *float64
-	DependsOn    []string
+	// UserMaxBudgetUSD is what the user actually asked for, set once by
+	// CreateJob and never modified afterward by anything — not CapBudget,
+	// not any other code path. This, not MaxBudgetUSD, is what a
+	// cumulative-lifetime-spend enforcement check (dispatch.RunJob) must
+	// compare against: a real incident showed a Resumable job with too
+	// tight a per-dispatch cap getting --resume'd 151 times over 23 hours
+	// for $359 against a two-cent cap, because --max-budget-usd is enforced
+	// by the CLI per invocation, not across a job's lifetime, so each
+	// attempt looked individually fine. Checking cumulative spend against
+	// MaxBudgetUSD instead would have been wrong in a different way: once
+	// CapBudget tightens MaxBudgetUSD to fit one window, a stale smaller
+	// value would keep failing an otherwise-viable job forever, long after
+	// it had enough headroom to actually finish. UserMaxBudgetUSD is immune
+	// to that because nothing but the user's own original request ever sets
+	// it. queue.CapBudget also clamps its own computed cap to never exceed
+	// this (min(scheduler's headroom-fit value, UserMaxBudgetUSD)), so the
+	// scheduler can tighten a user's cap to fit a window but never loosen it
+	// past what the user actually asked for.
+	UserMaxBudgetUSD *float64
+	DependsOn        []string
 
 	SessionID string // set after first dispatch; enables --resume
 	// ParentJobID is set when this job was created by promoting another

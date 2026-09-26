@@ -200,6 +200,199 @@ func TestDispatchOne_BudgetCutoff_PausesForResume(t *testing.T) {
 	}
 }
 
+// TestRunJob_RefusesResumeOnceMaxBudgetExhausted is the regression test for
+// a real incident: a Resumable job with a cap too tight to ever finish in
+// one dispatch was resumed automatically 151 times over 23 hours (the
+// scheduler's PausedBudgetRetryCooldown throttled the *rate*, correctly,
+// but nothing stopped it from being retried forever) — $359 in cumulative
+// cost against a two-cent cap, because --max-budget-usd is enforced by the
+// CLI per invocation, not across a job's lifetime, and each individual
+// attempt's own cost looked unremarkable to isBudgetCutoff in isolation.
+func TestRunJob_RefusesResumeOnceMaxBudgetExhausted(t *testing.T) {
+	t.Setenv("FAKECLAUDE_FIXTURE", "budget_capped")
+	d := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// The fixture's total_cost_usd is 0.05 — a 0.02 cap means the very
+	// first dispatch already exceeds it, exactly like the real incident
+	// (a cap far below the cost of even one real attempt). UserMaxBudgetUSD
+	// is what the new guard actually checks (see dispatch.go) — set it
+	// alongside MaxBudgetUSD exactly as CreateJobRequest.toJob() would for
+	// a job the user capped directly at creation, with no scheduler
+	// involvement at all.
+	budgetCap := 0.02
+	created, err := d.queue.Enqueue(ctx, store.Job{Kind: store.JobKindResearch, Prompt: "do a big thing", MaxBudgetUSD: &budgetCap, UserMaxBudgetUSD: &budgetCap, Resumable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.DispatchOne(ctx, created.ID); err != nil {
+		t.Fatalf("first DispatchOne() error: %v", err)
+	}
+	afterFirst, err := d.queue.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterFirst.Status != store.StatusPausedBudget {
+		t.Fatalf("Status after first dispatch = %q, want %q", afterFirst.Status, store.StatusPausedBudget)
+	}
+	spentAfterFirst, err := d.ledger.JobCumulativeCost(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spentAfterFirst != 0.05 {
+		t.Fatalf("cumulative spend after first dispatch = %v, want the fixture's 0.05", spentAfterFirst)
+	}
+
+	// Second attempt (what the scheduler's cooldown-expired resume, or a
+	// manual `queue dispatch`, would do next): must be refused BEFORE
+	// spawning the runner again, not merely re-capped or re-attempted.
+	if err := d.DispatchOne(ctx, created.ID); err != nil {
+		t.Fatalf("second DispatchOne() error: %v", err)
+	}
+	afterSecond, err := d.queue.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterSecond.Status != store.StatusFailed {
+		t.Errorf("Status after second dispatch = %q, want %q (exhausted budget, refused to resume)", afterSecond.Status, store.StatusFailed)
+	}
+	if !strings.Contains(afterSecond.FailureReason, "exhausted MaxBudgetUSD") {
+		t.Errorf("FailureReason = %q, want it to explain the exhausted cumulative cap", afterSecond.FailureReason)
+	}
+
+	// The real proof: cumulative cost must be UNCHANGED from after the
+	// first dispatch — if the runner had actually run a second time (even
+	// briefly), the budget_capped fixture would add another 0.05.
+	spentAfterSecond, err := d.ledger.JobCumulativeCost(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spentAfterSecond != spentAfterFirst {
+		t.Errorf("cumulative spend after second dispatch = %v, want unchanged %v (runner must not have run again)", spentAfterSecond, spentAfterFirst)
+	}
+}
+
+// TestRunJob_SchedulerCappedJob_NotSubjectToLifetimeCheck is the other half
+// of the regression test above: a review of the cumulative-spend guard
+// found that, checked against plain MaxBudgetUSD, it would break §6.4
+// strategy 1 (budget-capped continuation) for any job the *scheduler*
+// capped rather than the user — queue.CapBudget writes MaxBudgetUSD, and
+// that value can go stale (a job capped to fit one window's headroom that
+// later gets enough headroom to finish outright is never re-capped, so the
+// old smaller value would otherwise sit there looking like an
+// already-exhausted lifetime budget). This confirms a job with no
+// UserMaxBudgetUSD (never capped by the user, only by the scheduler) is not
+// subject to the lifetime check at all, even though cumulative cost already
+// exceeds the stale scheduler-set MaxBudgetUSD.
+func TestRunJob_SchedulerCappedJob_NotSubjectToLifetimeCheck(t *testing.T) {
+	d := newTestDispatcher(t)
+	ctx := context.Background()
+
+	created, err := d.queue.Enqueue(ctx, store.Job{Kind: store.JobKindResearch, Prompt: "do a big thing", Resumable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulates what scheduler.FitJob's FitCapBudget verdict does: cap an
+	// uncapped-by-the-user job to fit remaining window headroom.
+	if err := d.queue.CapBudget(ctx, created.ID, 0.04); err != nil {
+		t.Fatalf("CapBudget() error: %v", err)
+	}
+
+	t.Setenv("FAKECLAUDE_FIXTURE", "budget_capped") // fixture cost 0.05 exceeds the 0.04 cap
+	if err := d.DispatchOne(ctx, created.ID); err != nil {
+		t.Fatalf("first DispatchOne() error: %v", err)
+	}
+	afterFirst, err := d.queue.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterFirst.Status != store.StatusPausedBudget {
+		t.Fatalf("Status after first dispatch = %q, want %q", afterFirst.Status, store.StatusPausedBudget)
+	}
+	if afterFirst.UserMaxBudgetUSD != nil {
+		t.Fatal("UserMaxBudgetUSD is set after CapBudget, want nil (CapBudget must never touch it)")
+	}
+
+	// A later tick decides this job now fits without needing to be re-capped
+	// at all (FitDispatch, not FitCapBudget) — the stale 0.04 scheduler
+	// value is still sitting on the job, unrelated to its real chances now.
+	// Cumulative spend (0.05) already exceeds it, but this must still be
+	// allowed to actually finish, since the cap was never the user's own
+	// lifetime intent.
+	t.Setenv("FAKECLAUDE_FIXTURE", "happy_path")
+	if err := d.DispatchOne(ctx, created.ID); err != nil {
+		t.Fatalf("second DispatchOne() error: %v", err)
+	}
+	final, err := d.queue.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Status != store.StatusSucceeded {
+		t.Errorf("Status after legitimate resume = %q, want %q — a scheduler-set cap must not block it just because cumulative spend exceeds the stale value", final.Status, store.StatusSucceeded)
+	}
+}
+
+// TestRunJob_UserCappedJobLaterSchedulerCapped_StillEnforcesLifetimeCap
+// covers the case the reviewer of the two tests above flagged as missing:
+// a job the USER capped, which the scheduler THEN also caps down further to
+// fit a tight window (§6.4 strategy 1 on top of a real user cap). The
+// user's lifetime intent must still be enforced — CapBudget must never
+// raise the effective cap above it, and once cumulative spend reaches the
+// user's real cap, the job must stop being resumed regardless of what the
+// scheduler's own per-window value says.
+func TestRunJob_UserCappedJobLaterSchedulerCapped_StillEnforcesLifetimeCap(t *testing.T) {
+	d := newTestDispatcher(t)
+	ctx := context.Background()
+
+	userCap := 0.03
+	created, err := d.queue.Enqueue(ctx, store.Job{Kind: store.JobKindResearch, Prompt: "do a big thing", MaxBudgetUSD: &userCap, UserMaxBudgetUSD: &userCap, Resumable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Scheduler tightens it further to fit a window's headroom — a value
+	// ABOVE the user's own cap, which CapBudget must clamp down rather than
+	// honor outright (this is the fix for the separate, pre-existing
+	// "CapBudget can raise a cap" issue, exercised here as a precondition).
+	if err := d.queue.CapBudget(ctx, created.ID, 0.10); err != nil {
+		t.Fatalf("CapBudget() error: %v", err)
+	}
+	capped, err := d.queue.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capped.MaxBudgetUSD == nil || *capped.MaxBudgetUSD != userCap {
+		t.Fatalf("MaxBudgetUSD after CapBudget(0.10) = %v, want clamped to the user's own cap %v", capped.MaxBudgetUSD, userCap)
+	}
+
+	t.Setenv("FAKECLAUDE_FIXTURE", "budget_capped") // fixture cost 0.05 exceeds the 0.03 user cap
+	if err := d.DispatchOne(ctx, created.ID); err != nil {
+		t.Fatalf("first DispatchOne() error: %v", err)
+	}
+	afterFirst, err := d.queue.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterFirst.Status != store.StatusPausedBudget {
+		t.Fatalf("Status after first dispatch = %q, want %q", afterFirst.Status, store.StatusPausedBudget)
+	}
+
+	// A second resume must still be refused — the user's real cap is
+	// already exhausted, regardless of any scheduler pacing on top of it.
+	if err := d.DispatchOne(ctx, created.ID); err != nil {
+		t.Fatalf("second DispatchOne() error: %v", err)
+	}
+	final, err := d.queue.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Status != store.StatusFailed {
+		t.Errorf("Status after second dispatch = %q, want %q (user's lifetime cap exhausted, must not resume even with a scheduler cap layered on top)", final.Status, store.StatusFailed)
+	}
+}
+
 func TestDispatchOne_BudgetCutoff_ErrorResult_StillPauses(t *testing.T) {
 	t.Setenv("FAKECLAUDE_FIXTURE", "budget_capped_error")
 	d := newTestDispatcher(t)

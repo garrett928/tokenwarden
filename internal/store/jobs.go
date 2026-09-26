@@ -69,14 +69,14 @@ func (s *Store) CreateJob(ctx context.Context, j Job) (Job, error) {
 		INSERT INTO jobs (
 			id, kind, prompt, workspace, model, effort,
 			attachments, steps, resumable, priority,
-			earliest_at, deadline_at, max_budget_usd, depends_on,
+			earliest_at, deadline_at, max_budget_usd, user_max_budget_usd, depends_on,
 			session_id, parent_job_id, status, failure_reason, result_text, created_at, updated_at,
 			permission_mode, allowed_tools, add_dirs, json_schema, freeform_worktree
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		j.ID, string(j.Kind), j.Prompt, j.Workspace, j.Model, j.Effort,
 		string(attachmentsJSON), string(stepsJSON), j.Resumable, j.Priority,
-		unixOrNil(j.EarliestAt), unixOrNil(j.DeadlineAt), j.MaxBudgetUSD, string(dependsOnJSON),
+		unixOrNil(j.EarliestAt), unixOrNil(j.DeadlineAt), j.MaxBudgetUSD, j.UserMaxBudgetUSD, string(dependsOnJSON),
 		j.SessionID, j.ParentJobID, string(j.Status), j.FailureReason, j.Result, j.CreatedAt.Unix(), j.UpdatedAt.Unix(),
 		j.PermissionMode, string(allowedToolsJSON), string(addDirsJSON), j.JSONSchema, j.FreeformWorktree,
 	)
@@ -203,10 +203,14 @@ func (s *Store) UpdateDependsOn(ctx context.Context, id string, dependsOn []stri
 	return checkRowsAffected(res, id)
 }
 
-// UpdateJobMaxBudgetUSD sets a job's per-dispatch spend cap — used both at
-// job creation (via CreateJob) and by the scheduler's §6.4 strategy 1
-// (budget-capped continuation), which caps a resumable job's next dispatch
-// to remaining 5-hour headroom rather than letting it overshoot.
+// UpdateJobMaxBudgetUSD sets a job's CURRENT effective per-dispatch cap.
+// Its only caller is the scheduler's §6.4 strategy 1 (queue.CapBudget),
+// which caps a resumable job's next dispatch to remaining 5-hour headroom
+// rather than letting it overshoot. This deliberately never touches
+// UserMaxBudgetUSD (set once at creation, immutable) — see that field's doc
+// comment on store.Job for why a cumulative-lifetime-spend check must
+// compare against the user's stable original intent, not this value, which
+// changes tick to tick as window headroom does.
 func (s *Store) UpdateJobMaxBudgetUSD(ctx context.Context, id string, maxBudgetUSD *float64) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE jobs SET max_budget_usd = ?, updated_at = ? WHERE id = ?
