@@ -89,6 +89,40 @@ func TestPrintSchedulerConfig(t *testing.T) {
 	}
 }
 
+func TestParseOptionalRFC3339_EmptyReturnsNil(t *testing.T) {
+	got, err := parseOptionalRFC3339("earliest-at", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("got %v, want nil for an empty (unset) flag", got)
+	}
+}
+
+func TestParseOptionalRFC3339_ValidTimestamp(t *testing.T) {
+	got, err := parseOptionalRFC3339("earliest-at", "2026-09-26T15:00:00Z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("got nil, want a parsed time")
+	}
+	want := time.Date(2026, 9, 26, 15, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestParseOptionalRFC3339_InvalidTimestamp(t *testing.T) {
+	_, err := parseOptionalRFC3339("deadline-at", "not-a-timestamp")
+	if err == nil {
+		t.Fatal("expected error for invalid timestamp, got none")
+	}
+	if !strings.Contains(err.Error(), "--deadline-at") {
+		t.Errorf("error = %q, want it to name the flag (--deadline-at)", err.Error())
+	}
+}
+
 func TestParseTimeBlock_PlainTimeRange(t *testing.T) {
 	b, err := parseTimeBlock("09:00-17:00")
 	if err != nil {
