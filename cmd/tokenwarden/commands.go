@@ -62,6 +62,8 @@ func cmdQueueAdd(args []string) error {
 	addDirs := fs.String("add-dir", "", "freeform only: comma-separated extra --add-dir paths")
 	freeformWorktree := fs.Bool("freeform-worktree", false, "freeform only: run in an isolated --worktree")
 	jsonSchema := fs.String("json-schema", "", "structured result schema, primarily for research jobs")
+	earliestAt := fs.String("earliest-at", "", "RFC3339 timestamp (e.g. 2026-09-26T15:00:00Z); job won't be considered runnable before this time")
+	deadlineAt := fs.String("deadline-at", "", "RFC3339 timestamp; stored and inherited by promoted steps, but not yet enforced by the scheduler (REQUIREMENTS.md backlog)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -89,6 +91,16 @@ func cmdQueueAdd(args []string) error {
 	if *maxBudget > 0 {
 		req.MaxBudgetUSD = maxBudget
 	}
+	earliestAtParsed, err := parseOptionalRFC3339("earliest-at", *earliestAt)
+	if err != nil {
+		return err
+	}
+	req.EarliestAt = earliestAtParsed
+	deadlineAtParsed, err := parseOptionalRFC3339("deadline-at", *deadlineAt)
+	if err != nil {
+		return err
+	}
+	req.DeadlineAt = deadlineAtParsed
 
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
@@ -681,6 +693,21 @@ func printSchedulerConfig(cfg api.SchedulerConfigResponse) {
 			fmt.Printf("  %s\n", formatted)
 		}
 	}
+}
+
+// parseOptionalRFC3339 parses s as an RFC3339 timestamp for the named flag,
+// returning (nil, nil) when s is empty (the flag wasn't given) rather than
+// erroring — matching every other optional `queue add` flag's "0/empty
+// means unset" convention.
+func parseOptionalRFC3339(flagName, s string) (*time.Time, error) {
+	if s == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil, fmt.Errorf("--%s: %w", flagName, err)
+	}
+	return &t, nil
 }
 
 func splitNonEmpty(s string) []string {
