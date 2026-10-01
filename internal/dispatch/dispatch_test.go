@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"tokenwarden/internal/budget"
+	"tokenwarden/internal/logging/logtest"
 	"tokenwarden/internal/queue"
 	"tokenwarden/internal/runner"
 	"tokenwarden/internal/store"
@@ -539,5 +540,65 @@ func TestResume_AllowsDispatchAgain(t *testing.T) {
 	}
 	if got.Status != store.StatusSucceeded {
 		t.Errorf("Status = %q, want %q", got.Status, store.StatusSucceeded)
+	}
+}
+
+// TestDispatchOne_Logs_StartAndEnd proves an unattended run is auditable
+// from the log alone: a dispatch leaves a start line and an end line with
+// the outcome, cost, and tokens.
+func TestDispatchOne_Logs_StartAndEnd(t *testing.T) {
+	t.Setenv("FAKECLAUDE_FIXTURE", "happy_path")
+	logs := logtest.Capture(t)
+	d := newTestDispatcher(t)
+	ctx := context.Background()
+
+	created, err := d.queue.Enqueue(ctx, store.Job{Kind: store.JobKindResearch, Prompt: "say pong"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DispatchOne(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	out := logs.String()
+	for _, want := range []string{
+		`msg="dispatch start"`, "job_id=" + created.ID, "kind=research",
+		`msg="dispatch end"`, "status=succeeded", "cost_usd=0.0230845", "output_tokens=", "session_id=", "duration_ms=",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestDispatch_Logs_KillSwitchAndResumeRefused(t *testing.T) {
+	t.Setenv("FAKECLAUDE_FIXTURE", "budget_capped")
+	logs := logtest.Capture(t)
+	d := newTestDispatcher(t)
+	ctx := context.Background()
+
+	budgetCap := 0.02
+	created, err := d.queue.Enqueue(ctx, store.Job{Kind: store.JobKindResearch, Prompt: "big", MaxBudgetUSD: &budgetCap, UserMaxBudgetUSD: &budgetCap, Resumable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DispatchOne(ctx, created.ID); err != nil { // pauses at cap
+		t.Fatal(err)
+	}
+	if err := d.DispatchOne(ctx, created.ID); err != nil { // refused
+		t.Fatal(err)
+	}
+	d.Halt()
+	_ = d.DispatchOne(ctx, created.ID)
+	d.Resume()
+
+	out := logs.String()
+	for _, want := range []string{
+		"status=paused_budget", "resume refused", "cumulative_cost_usd=0.05",
+		"failure_reason=", "kill switch halted", "dispatch refused: kill switch is active", "kill switch resumed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log missing %q:\n%s", want, out)
+		}
 	}
 }

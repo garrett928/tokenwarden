@@ -2,8 +2,11 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"tokenwarden/internal/logging/logtest"
 )
 
 func TestRecordGroundTruth_Success(t *testing.T) {
@@ -82,5 +85,21 @@ func TestUsage_GroundTruthNilWhenNoneRecorded(t *testing.T) {
 	got := decode[UsageResponse](t, resp)
 	if got.GroundTruth != nil {
 		t.Errorf("GroundTruth = %+v, want nil on a fresh store", got.GroundTruth)
+	}
+}
+
+func TestRecordGroundTruth_IsLogged(t *testing.T) {
+	logs := logtest.Capture(t)
+	srv := newTestServer(t)
+	now := time.Now()
+
+	postJSON(t, srv.URL+"/api/ground-truth", RecordGroundTruthRequest{
+		FiveHour: RateLimitWindow{UsedPercentage: 89, ResetsAt: now.Add(time.Hour).Unix()},
+		SevenDay: RateLimitWindow{UsedPercentage: 22, ResetsAt: now.Add(48 * time.Hour).Unix()},
+	})
+	for _, want := range []string{"ground truth reading recorded", "five_hour_pct=89", "seven_day_pct=22"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("log missing %q:\n%s", want, logs.String())
+		}
 	}
 }

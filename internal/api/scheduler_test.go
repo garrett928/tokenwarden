@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
+
+	"tokenwarden/internal/logging/logtest"
 )
 
 func putJSON(t *testing.T, url string, body any) *http.Response {
@@ -113,5 +116,17 @@ func TestUpdateSchedulerConfig_RejectsOutOfRangeAggressiveness(t *testing.T) {
 	resp := putJSON(t, srv.URL+"/api/scheduler/config", UpdateSchedulerConfigRequest{Aggressiveness: 150})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestUpdateSchedulerConfig_IsLogged(t *testing.T) {
+	logs := logtest.Capture(t)
+	srv := newTestServer(t)
+
+	putJSON(t, srv.URL+"/api/scheduler/config", UpdateSchedulerConfigRequest{Enabled: true, Aggressiveness: 70})
+	for _, want := range []string{"scheduler config updated", "enabled=true", "aggressiveness=70"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("log missing %q:\n%s", want, logs.String())
+		}
 	}
 }

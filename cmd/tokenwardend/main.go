@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,6 +26,7 @@ import (
 	"tokenwarden/internal/budget"
 	"tokenwarden/internal/config"
 	"tokenwarden/internal/dispatch"
+	"tokenwarden/internal/logging"
 	"tokenwarden/internal/queue"
 	"tokenwarden/internal/runner"
 	"tokenwarden/internal/scheduler"
@@ -49,6 +51,21 @@ func run() error {
 	if err := cfg.EnsureDataDir(); err != nil {
 		return err
 	}
+
+	closeLog, err := logging.Setup(cfg.ResolvedLogPath(), os.Stderr)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeLog() }()
+	slog.Info("daemon starting",
+		"pid", os.Getpid(),
+		"listen_addr", cfg.ListenAddr,
+		"data_dir", cfg.DataDir,
+		"db_path", cfg.ResolvedDBPath(),
+		"log_file", cfg.ResolvedLogPath(),
+		"claude_binary", cfg.ClaudeBinaryPath,
+		"ui_dist_dir", cfg.UIDistDir,
+	)
 
 	st, err := store.Open(cfg.ResolvedDBPath())
 	if err != nil {
@@ -108,13 +125,14 @@ func run() error {
 
 	select {
 	case <-ctx.Done():
-		log.Println("shutdown signal received, draining connections...")
+		slog.Info("daemon shutting down: signal received, draining connections")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("shutting down http server: %w", err)
 		}
 		<-serveErr
+		slog.Info("daemon stopped cleanly")
 		return nil
 	case err := <-serveErr:
 		if err != nil {

@@ -10,7 +10,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
+	"time"
+	"unicode/utf8"
 
 	"tokenwarden/internal/budget"
 	"tokenwarden/internal/queue"
@@ -56,6 +59,7 @@ func (d *Dispatcher) Halt() {
 	for _, cancel := range d.running {
 		cancel()
 	}
+	slog.Warn("kill switch halted", "in_flight_cancelled", len(d.running))
 }
 
 // Resume deactivates the kill switch so future dispatches are allowed
@@ -65,6 +69,7 @@ func (d *Dispatcher) Resume() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.halted = false
+	slog.Info("kill switch resumed")
 }
 
 // Halted reports whether the kill switch is currently active.
@@ -80,6 +85,7 @@ func (d *Dispatcher) Halted() bool {
 // queue.ErrNotRunnable) without ever starting the subprocess.
 func (d *Dispatcher) DispatchOne(ctx context.Context, jobID string) error {
 	if d.Halted() {
+		slog.Warn("dispatch refused: kill switch is active", "job_id", jobID)
 		return ErrHalted
 	}
 	job, err := d.queue.MarkRunning(ctx, jobID)
@@ -103,7 +109,7 @@ func (d *Dispatcher) RunJob(ctx context.Context, job store.Job) error {
 	if d.halted {
 		d.mu.Unlock()
 		cancel()
-		return d.queue.Finish(ctx, job.ID, queue.FinishOutcome{Status: store.StatusFailed, FailureReason: ErrHalted.Error()})
+		return d.finish(ctx, job, time.Now(), nil, queue.FinishOutcome{Status: store.StatusFailed, FailureReason: ErrHalted.Error()})
 	}
 	d.running[job.ID] = cancel
 	d.mu.Unlock()
@@ -141,19 +147,33 @@ func (d *Dispatcher) RunJob(ctx context.Context, job store.Job) error {
 			return fmt.Errorf("checking cumulative spend for job %s: %w", job.ID, err)
 		}
 		if spent >= *job.UserMaxBudgetUSD {
-			return d.queue.Finish(ctx, job.ID, queue.FinishOutcome{
+			slog.Warn("resume refused: cumulative spend meets the user's budget cap",
+				"job_id", job.ID, "user_max_budget_usd", *job.UserMaxBudgetUSD, "cumulative_cost_usd", spent)
+			return d.finish(ctx, job, time.Now(), nil, queue.FinishOutcome{
 				Status:        store.StatusFailed,
 				FailureReason: fmt.Sprintf("exhausted MaxBudgetUSD ($%.4f cap): cumulative spend across prior attempts is already $%.4f — refusing to resume further", *job.UserMaxBudgetUSD, spent),
 			})
 		}
 	}
 
+	started := time.Now()
+	slog.Info("dispatch start",
+		"job_id", job.ID,
+		"kind", job.Kind,
+		"model", job.Model,
+		"workspace", job.Workspace,
+		"max_budget_usd", floatOrNone(job.MaxBudgetUSD),
+		"user_max_budget_usd", floatOrNone(job.UserMaxBudgetUSD),
+		"resuming", job.SessionID != "",
+		"resumable", job.Resumable,
+		"priority", job.Priority,
+	)
 	result, runErr := d.runner.Run(runCtx, job, runner.RunOptions{})
 	if runErr != nil {
 		// No Result was ever produced, so there's nothing for the ledger to
 		// record (REQUIREMENTS.md §6.2 step 8: "append to ledger on
 		// completion" — a run that never completed has no usage to append).
-		return d.queue.Finish(ctx, job.ID, queue.FinishOutcome{Status: store.StatusFailed, FailureReason: runErr.Error()})
+		return d.finish(ctx, job, started, nil, queue.FinishOutcome{Status: store.StatusFailed, FailureReason: runErr.Error()})
 	}
 
 	// A ledger-write failure shouldn't leave the job stuck in Running — the
@@ -161,6 +181,7 @@ func (d *Dispatcher) RunJob(ctx context.Context, job store.Job) error {
 	// managed to record it — but it must not be silently swallowed either.
 	var recordErr error
 	if err := d.ledger.RecordResult(ctx, job.ID, result); err != nil {
+		slog.Error("recording usage to ledger failed", "job_id", job.ID, "err", err)
 		recordErr = fmt.Errorf("recording usage for job %s: %w", job.ID, err)
 	}
 
@@ -172,11 +193,11 @@ func (d *Dispatcher) RunJob(ctx context.Context, job store.Job) error {
 		// queue.MarkRunning's existing "Queued or PausedBudget" acceptance
 		// lets a later dispatch --resume it (§6.4 strategy 1), regardless of
 		// whether the CLI happened to also report IsError for the cutoff.
-		finishErr = d.queue.Finish(ctx, job.ID, queue.FinishOutcome{Status: store.StatusPausedBudget, SessionID: result.SessionID, Result: result.Result})
+		finishErr = d.finish(ctx, job, started, &result, queue.FinishOutcome{Status: store.StatusPausedBudget, SessionID: result.SessionID, Result: result.Result})
 	case result.IsError:
-		finishErr = d.queue.Finish(ctx, job.ID, queue.FinishOutcome{Status: store.StatusFailed, FailureReason: result.Result, SessionID: result.SessionID, Result: result.Result})
+		finishErr = d.finish(ctx, job, started, &result, queue.FinishOutcome{Status: store.StatusFailed, FailureReason: result.Result, SessionID: result.SessionID, Result: result.Result})
 	default:
-		finishErr = d.queue.Finish(ctx, job.ID, queue.FinishOutcome{Status: store.StatusSucceeded, SessionID: result.SessionID, Result: result.Result})
+		finishErr = d.finish(ctx, job, started, &result, queue.FinishOutcome{Status: store.StatusSucceeded, SessionID: result.SessionID, Result: result.Result})
 	}
 
 	return errors.Join(recordErr, finishErr)
@@ -194,4 +215,59 @@ func (d *Dispatcher) RunJob(ctx context.Context, job store.Job) error {
 // worse case is an unnecessary --resume, not lost work.
 func isBudgetCutoff(job store.Job, result runner.Result) bool {
 	return job.MaxBudgetUSD != nil && result.SessionID != "" && result.TotalCostUSD >= *job.MaxBudgetUSD
+}
+
+// finish records a job's outcome via queue.Finish and logs one "dispatch
+// end" line carrying everything needed to judge the run from the log alone.
+// result is nil when no run produced one (kill switch, exhausted cap,
+// runner error).
+func (d *Dispatcher) finish(ctx context.Context, job store.Job, started time.Time, result *runner.Result, out queue.FinishOutcome) error {
+	err := d.queue.Finish(ctx, job.ID, out)
+	attrs := []any{
+		"job_id", job.ID,
+		"kind", job.Kind,
+		"status", out.Status,
+		"duration_ms", time.Since(started).Milliseconds(),
+	}
+	if out.FailureReason != "" {
+		attrs = append(attrs, "failure_reason", truncate(out.FailureReason, 300))
+	}
+	if result != nil {
+		attrs = append(attrs,
+			"session_id", result.SessionID,
+			"stop_reason", result.StopReason,
+			"num_turns", result.NumTurns,
+			"cost_usd", result.TotalCostUSD,
+			"input_tokens", result.Usage.InputTokens,
+			"output_tokens", result.Usage.OutputTokens,
+			"cache_creation_tokens", result.Usage.CacheCreationInputTokens,
+			"cache_read_tokens", result.Usage.CacheReadInputTokens,
+			"rate_limit_events", len(result.RateLimitEvents),
+		)
+	}
+	if err != nil {
+		attrs = append(attrs, "finish_err", err)
+		slog.Error("dispatch end", attrs...)
+	} else {
+		slog.Info("dispatch end", attrs...)
+	}
+	return err
+}
+
+func floatOrNone(f *float64) any {
+	if f == nil {
+		return "none"
+	}
+	return *f
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	// Back up to a rune boundary so a multi-byte character isn't cut in half.
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "..."
 }
