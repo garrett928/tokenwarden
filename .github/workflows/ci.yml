@@ -139,3 +139,40 @@ jobs:
           go build -o bin/ ./cmd/tokenwardend
           go build -o bin/ ./cmd/tokenwarden
           go build -o bin/ ./cmd/twprobe
+
+  # Squash-merges the PR once every job above has passed. On by default;
+  # opt out per PR with the `no-automerge` label (e.g. `gh pr create
+  # --label no-automerge`, or add the label any time before CI finishes).
+  #
+  # This repo is public, so the `if:` below is a hard safety boundary, not
+  # a convenience: only PRs opened by the repo owner from a branch in this
+  # same repo ever merge themselves — never a fork's PR, never Dependabot's
+  # (those still need a human). The label and draft state are re-read live
+  # in the step rather than trusted from the event payload, because they
+  # may have changed since CI started. --match-head-commit refuses the
+  # merge if a newer commit was pushed after this run began, so an
+  # untested commit can't ride in on an older run's green result.
+  automerge:
+    needs: [test, lint, vulncheck, desktop-cross-platform, cross-compile]
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.user.login == github.repository_owner &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Merge unless opted out
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isDraft,labels \
+            --jq '[.isDraft, (.labels | map(.name) | index("no-automerge") != null)] | @tsv')
+          if [ "$state" != "$(printf 'false\tfalse')" ]; then
+            echo "Not merging PR #$PR (draft or labeled no-automerge): $state"
+            exit 0
+          fi
+          gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$HEAD_SHA"
