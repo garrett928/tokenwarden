@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 
 	"tokenwarden/internal/queue"
@@ -23,6 +24,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeQueueError(w, err)
 		return
 	}
+	slog.Info("job created", "job_id", created.ID, "kind", created.Kind, "status", created.Status, "model", created.Model,
+		"workspace", created.Workspace, "priority", created.Priority, "resumable", created.Resumable, "steps", len(created.Steps))
 	writeJSON(w, http.StatusCreated, newJobResponse(created))
 }
 
@@ -68,6 +71,7 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 		writeQueueError(w, err)
 		return
 	}
+	slog.Info("job cancelled", "job_id", j.ID, "status", j.Status)
 	writeJSON(w, http.StatusOK, newJobResponse(j))
 }
 

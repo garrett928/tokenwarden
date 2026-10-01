@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -55,6 +56,12 @@ func (s *Server) handleRecordGroundTruth(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "recording ground truth failed")
 		return
 	}
+	slog.Info("ground truth reading recorded",
+		"five_hour_pct", reading.FiveHourUsedPercentage,
+		"five_hour_resets_at", reading.FiveHourResetsAt.Format(time.RFC3339),
+		"seven_day_pct", reading.SevenDayUsedPercentage,
+		"seven_day_resets_at", reading.SevenDayResetsAt.Format(time.RFC3339),
+	)
 	writeJSON(w, http.StatusCreated, newGroundTruthResponse(reading, time.Now()))
 }
 

@@ -13,7 +13,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"tokenwarden/internal/store"
@@ -67,11 +69,17 @@ const PausedBudgetRetryCooldown = 5 * time.Minute
 // Queue wraps a *store.Store with job lifecycle rules.
 type Queue struct {
 	store *store.Store
+
+	// cooldownLogged remembers, per PausedBudget job, the UpdatedAt for
+	// which Candidates already logged a cooldown hold, so that line appears
+	// once per pause rather than on every tick of the cooldown.
+	mu             sync.Mutex
+	cooldownLogged map[string]time.Time
 }
 
 // New wraps the given store.
 func New(s *store.Store) *Queue {
-	return &Queue{store: s}
+	return &Queue{store: s, cooldownLogged: make(map[string]time.Time)}
 }
 
 // Enqueue validates a job's dependencies and persists it with the correct
@@ -191,6 +199,14 @@ func (q *Queue) Candidates(ctx context.Context, now time.Time) ([]store.Job, err
 			continue
 		}
 		if j.Status == store.StatusPausedBudget && now.Sub(j.UpdatedAt) < PausedBudgetRetryCooldown {
+			q.mu.Lock()
+			first := !q.cooldownLogged[j.ID].Equal(j.UpdatedAt)
+			q.cooldownLogged[j.ID] = j.UpdatedAt
+			q.mu.Unlock()
+			if first {
+				slog.Info("paused_budget job held back by retry cooldown",
+					"job_id", j.ID, "cooldown", PausedBudgetRetryCooldown.String(), "retry_at", j.UpdatedAt.Add(PausedBudgetRetryCooldown).Format(time.RFC3339))
+			}
 			continue
 		}
 		runnable = append(runnable, j)

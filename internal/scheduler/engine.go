@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"tokenwarden/internal/budget"
@@ -26,6 +29,10 @@ type Engine struct {
 	dispatch *dispatch.Dispatcher
 	ledger   *budget.Ledger
 	clock    Clock
+
+	// Counters for the heartbeat line, updated by Run's tick loop and read
+	// by its heartbeat goroutine.
+	ticks, dispatched, tickErrors atomic.Int64
 }
 
 // New builds an Engine. clock defaults to RealClock{} if nil.
@@ -42,6 +49,9 @@ type TickResult struct {
 	Decision   Decision
 	Usage      UsageState
 	Dispatched bool
+	// Candidates is how many runnable jobs the tick saw (0 when an
+	// admission check held the tick back before looking).
+	Candidates int
 	// JobID and DispatchErr describe the job actually dispatched this
 	// tick, if any — the last candidate FitJob approved (as-is or capped),
 	// not necessarily Candidates' first entry, since earlier ones may have
@@ -111,7 +121,7 @@ func (e *Engine) Tick(ctx context.Context) (TickResult, error) {
 	if err != nil {
 		return TickResult{}, fmt.Errorf("finding runnable candidates: %w", err)
 	}
-	result := TickResult{Decision: decision, Usage: usage}
+	result := TickResult{Decision: decision, Usage: usage, Candidates: len(candidates)}
 	if len(candidates) == 0 {
 		return result, nil
 	}
@@ -140,6 +150,9 @@ func (e *Engine) Tick(ctx context.Context) (TickResult, error) {
 			if err := e.queue.DeferOversized(ctx, job.ID, fit.Reason); err != nil {
 				return TickResult{}, fmt.Errorf("deferring oversized job %s: %w", job.ID, err)
 			}
+			if job.Status != store.StatusDeferredOversized || job.FailureReason != fit.Reason {
+				slog.Info("job deferred as oversized", "job_id", job.ID, "kind", job.Kind, "reason", fit.Reason)
+			}
 			result.DeferredJobIDs = append(result.DeferredJobIDs, job.ID)
 			continue // try the next-best candidate, §6.2 step 7
 		case FitPromoteSteps:
@@ -151,7 +164,7 @@ func (e *Engine) Tick(ctx context.Context) (TickResult, error) {
 			for _, c := range children {
 				childIDs = append(childIDs, c.ID)
 			}
-			log.Printf("scheduler: promoted job %s into %d step child job(s): %s", job.ID, len(childIDs), strings.Join(childIDs, ", "))
+			slog.Info("job promoted into step children", "job_id", job.ID, "children", strings.Join(childIDs, ","))
 			result.PromotedJobIDs = append(result.PromotedJobIDs, job.ID)
 			result.PromotedChildJobIDs = append(result.PromotedChildJobIDs, childIDs...)
 			// The new children weren't in this tick's candidates, so they
@@ -162,6 +175,7 @@ func (e *Engine) Tick(ctx context.Context) (TickResult, error) {
 				return TickResult{}, fmt.Errorf("capping budget for job %s: %w", job.ID, err)
 			}
 			result.BudgetCapUSD = fit.BudgetCapUSD
+			slog.Info("job budget capped to fit headroom", "job_id", job.ID, "kind", job.Kind, "cap_usd", fit.BudgetCapUSD)
 		}
 
 		dispatchErr := e.dispatch.DispatchOne(ctx, job.ID)
@@ -179,21 +193,132 @@ func (e *Engine) Tick(ctx context.Context) (TickResult, error) {
 	return result, nil
 }
 
+// heartbeatInterval is how often Run logs a heartbeat line: a periodic
+// proof of life with queue counts, so a quiet stretch of the log can be told
+// apart from a hung or dead daemon.
+const heartbeatInterval = 10 * time.Minute
+
 // Run calls Tick on TickInterval cadence until ctx is cancelled. A given
 // tick's error is logged rather than fatal — a transient issue (a single
 // failed dispatch, a DB hiccup) shouldn't stop a loop meant to run
-// unattended for days (FR-SCHED-6).
+// unattended for days (FR-SCHED-6). Every tick logs one line (see logTick)
+// and a heartbeat line goes out every heartbeatInterval.
 func (e *Engine) Run(ctx context.Context) {
+	if cfg, err := e.store.GetSchedulerConfig(ctx); err == nil {
+		slog.Info("scheduler loop started", append([]any{"tick_interval", TickInterval.String()}, configAttrs(cfg)...)...)
+	} else {
+		slog.Error("scheduler loop started; reading config failed", "err", err)
+	}
+	// The heartbeat runs on its own goroutine: Tick dispatches
+	// synchronously, so a multi-hour job would otherwise silence it — and a
+	// silent log can't be told apart from a hung daemon.
+	hbDone := make(chan struct{})
+	go func() {
+		defer close(hbDone)
+		hb := time.NewTicker(heartbeatInterval)
+		defer hb.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hb.C:
+				e.logHeartbeat(ctx)
+			}
+		}
+	}()
+
 	ticker := time.NewTicker(TickInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			<-hbDone
+			slog.Info("scheduler loop stopped", "ticks", e.ticks.Load(), "dispatched", e.dispatched.Load(), "tick_errors", e.tickErrors.Load())
 			return
 		case <-ticker.C:
-			if _, err := e.Tick(ctx); err != nil {
-				log.Printf("scheduler: tick error: %v", err)
+			res, err := e.Tick(ctx)
+			e.ticks.Add(1)
+			if res.Dispatched {
+				e.dispatched.Add(1)
 			}
+			if err != nil {
+				e.tickErrors.Add(1)
+			}
+			logTick(res, err)
 		}
+	}
+}
+
+// logTick writes the one line per tick that makes a run auditable: what the
+// admission checks decided and why, what usage state they saw, and what (if
+// anything) was dispatched, deferred, promoted, or capped.
+func logTick(res TickResult, err error) {
+	attrs := []any{
+		"decision", res.Decision.Action.String(),
+		"reason", res.Decision.Reason,
+		"usage_source", string(res.Usage.Source),
+		"five_hour_pct", res.Usage.FiveHourUsedPercent,
+		"seven_day_pct", res.Usage.SevenDayUsedPercent,
+		"candidates", res.Candidates,
+		"dispatched", res.Dispatched,
+	}
+	if !res.Decision.SleepUntil.IsZero() {
+		attrs = append(attrs, "sleep_until", res.Decision.SleepUntil.Format(time.RFC3339))
+	}
+	if res.JobID != "" {
+		attrs = append(attrs, "job_id", res.JobID)
+	}
+	if res.BudgetCapUSD != 0 {
+		attrs = append(attrs, "budget_cap_usd", res.BudgetCapUSD)
+	}
+	if len(res.DeferredJobIDs) > 0 {
+		attrs = append(attrs, "deferred", strings.Join(res.DeferredJobIDs, ","))
+	}
+	if len(res.PromotedJobIDs) > 0 {
+		attrs = append(attrs, "promoted", strings.Join(res.PromotedJobIDs, ","))
+	}
+	if err != nil {
+		attrs = append(attrs, "err", err)
+		slog.Error("scheduler tick", attrs...)
+		return
+	}
+	slog.Info("scheduler tick", attrs...)
+}
+
+func (e *Engine) logHeartbeat(ctx context.Context) {
+	attrs := []any{
+		"ticks_total", e.ticks.Load(),
+		"dispatched_total", e.dispatched.Load(),
+		"tick_errors_total", e.tickErrors.Load(),
+		"halted", e.dispatch.Halted(),
+	}
+	if cfg, err := e.store.GetSchedulerConfig(ctx); err == nil {
+		attrs = append(attrs, "scheduler_enabled", cfg.Enabled)
+	}
+	if jobs, err := e.store.ListJobs(ctx, store.ListFilter{}); err == nil {
+		counts := map[store.Status]int{}
+		for _, j := range jobs {
+			counts[j.Status]++
+		}
+		statuses := make([]string, 0, len(counts))
+		for st := range counts {
+			statuses = append(statuses, string(st))
+		}
+		sort.Strings(statuses)
+		for _, st := range statuses {
+			attrs = append(attrs, "jobs_"+st, counts[store.Status(st)])
+		}
+	} else {
+		attrs = append(attrs, "jobs_err", err)
+	}
+	slog.Info("heartbeat", attrs...)
+}
+
+func configAttrs(cfg store.SchedulerConfig) []any {
+	return []any{
+		"enabled", cfg.Enabled,
+		"aggressiveness", cfg.Aggressiveness,
+		"reserved_blocks", len(cfg.ReservedBlocks),
+		"preferred_windows", len(cfg.PreferredWindows),
 	}
 }

@@ -39,6 +39,11 @@ type Config struct {
 	// is no installed-binary layout yet (that's desktop-shell territory).
 	// A missing directory is not an error: the daemon just runs API-only.
 	UIDistDir string `json:"ui_dist_dir,omitempty"`
+
+	// LogFile is where the daemon appends its structured log (in addition
+	// to stderr). Empty means DataDir/tokenwardend.log — see
+	// ResolvedLogPath.
+	LogFile string `json:"log_file,omitempty"`
 }
 
 const (
@@ -48,6 +53,7 @@ const (
 	appDirName              = "tokenwarden"
 	dbFileName              = "tokenwarden.db"
 	configFileName          = "config.json"
+	logFileName             = "tokenwardend.log"
 )
 
 // Default returns configuration with no file or environment overrides
@@ -141,6 +147,9 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("TOKENWARDEN_UI_DIST_DIR"); v != "" {
 		cfg.UIDistDir = v
 	}
+	if v := os.Getenv("TOKENWARDEN_LOG_FILE"); v != "" {
+		cfg.LogFile = v
+	}
 }
 
 // ResolvedDBPath returns DBPath if set explicitly, otherwise DataDir joined
@@ -152,6 +161,15 @@ func (c Config) ResolvedDBPath() string {
 		return c.DBPath
 	}
 	return filepath.Join(c.DataDir, dbFileName)
+}
+
+// ResolvedLogPath returns LogFile if set explicitly, otherwise DataDir
+// joined with the default log filename.
+func (c Config) ResolvedLogPath() string {
+	if c.LogFile != "" {
+		return c.LogFile
+	}
+	return filepath.Join(c.DataDir, logFileName)
 }
 
 // EnsureDataDir creates DataDir (and any parents) if it doesn't exist.

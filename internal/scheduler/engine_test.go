@@ -7,10 +7,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"tokenwarden/internal/budget"
+	"tokenwarden/internal/logging/logtest"
 	"tokenwarden/internal/dispatch"
 	"tokenwarden/internal/queue"
 	"tokenwarden/internal/runner"
@@ -907,5 +909,55 @@ func TestTick_FiveHourCeilingReached_HoldsOff(t *testing.T) {
 	}
 	if !got.Dispatched {
 		t.Error("Dispatched = false after the window reset, want true")
+	}
+}
+
+// TestTick_Logs_DecisionDispatchDeferAndHeartbeat proves the scheduler's
+// operational log carries what's needed to judge an unattended run: the
+// per-tick decision with usage state, defer events, and a heartbeat.
+func TestTick_Logs_DecisionDispatchDeferAndHeartbeat(t *testing.T) {
+	logs := logtest.Capture(t)
+	te := newTestEngine(t, time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC))
+	ctx := context.Background()
+	start := te.clock.Now()
+
+	// Disabled tick: a quiet night must still say *why* nothing happened.
+	res, err := te.engine.Tick(ctx)
+	logTick(res, err)
+	for _, want := range []string{`msg="scheduler tick"`, "decision=disabled", "reason=", "usage_source=", "five_hour_pct=", "candidates=0", "dispatched=false"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("disabled tick log missing %q:\n%s", want, logs.String())
+		}
+	}
+
+	if err := te.store.UpdateSchedulerConfig(ctx, store.SchedulerConfig{Enabled: true, Aggressiveness: 80}); err != nil {
+		t.Fatal(err)
+	}
+	last := seedFittingData(t, te, start)
+	te.clock.Set(last.Add(time.Minute))
+	bigJob, err := te.queue.Enqueue(ctx, store.Job{Kind: store.JobKindResearch, Prompt: "oversized", Priority: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	smallJob, err := te.queue.Enqueue(ctx, store.Job{Kind: store.JobKindPlan, Prompt: "small", Priority: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKECLAUDE_FIXTURE", "happy_path")
+	res, err = te.engine.Tick(ctx)
+	logTick(res, err)
+	te.engine.ticks.Store(2)
+	te.engine.dispatched.Store(1)
+	te.engine.logHeartbeat(ctx)
+
+	for _, want := range []string{
+		`msg="job deferred as oversized"`, "job_id=" + bigJob.ID,
+		"dispatched=true", "job_id=" + smallJob.ID, "deferred=" + bigJob.ID, "candidates=2",
+		`msg="dispatch start"`, `msg="dispatch end"`,
+		"msg=heartbeat", "ticks_total=2", "dispatched_total=1", "halted=false", "scheduler_enabled=true", "jobs_deferred_oversized=1",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("log missing %q:\n%s", want, logs.String())
+		}
 	}
 }

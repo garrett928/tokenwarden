@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"tokenwarden/internal/logging/logtest"
 	"tokenwarden/internal/store"
 )
 
@@ -1307,5 +1308,33 @@ func TestFinish_RecordsResult(t *testing.T) {
 	}
 	if got.Result != "the answer is 42" {
 		t.Errorf("Result = %q, want %q", got.Result, "the answer is 42")
+	}
+}
+
+func TestCandidates_PausedBudgetCooldown_IsLogged(t *testing.T) {
+	logs := logtest.Capture(t)
+	q, s := newTestQueue(t)
+	ctx := context.Background()
+
+	job, err := q.Enqueue(ctx, minimalJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateStatus(ctx, job.ID, store.StatusPausedBudget, ""); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ { // several ticks inside one cooldown
+		if _, err := q.Candidates(ctx, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := logs.String()
+	if n := strings.Count(out, "retry cooldown"); n != 1 {
+		t.Errorf("cooldown line logged %d times across 3 Candidates calls, want exactly 1:\n%s", n, out)
+	}
+	for _, want := range []string{"retry cooldown", "job_id=" + job.ID, "retry_at="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log missing %q:\n%s", want, out)
+		}
 	}
 }

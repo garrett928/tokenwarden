@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -123,5 +124,11 @@ func (s *Server) handleUpdateSchedulerConfig(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "updating scheduler config failed")
 		return
 	}
+	slog.Info("scheduler config updated",
+		"enabled", updated.Enabled,
+		"aggressiveness", updated.Aggressiveness,
+		"reserved_blocks", len(updated.ReservedBlocks),
+		"preferred_windows", len(updated.PreferredWindows),
+	)
 	writeJSON(w, http.StatusOK, newSchedulerConfigResponse(updated))
 }

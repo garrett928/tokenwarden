@@ -126,3 +126,26 @@ func TestEnsureDataDir(t *testing.T) {
 		t.Errorf("%s is not a directory", dir)
 	}
 }
+
+func TestResolvedLogPath(t *testing.T) {
+	cfg := Config{DataDir: "/data"}
+	if got, want := cfg.ResolvedLogPath(), filepath.Join("/data", logFileName); got != want {
+		t.Errorf("ResolvedLogPath() = %q, want %q", got, want)
+	}
+
+	cfg.LogFile = "/custom/tw.log"
+	if got, want := cfg.ResolvedLogPath(), "/custom/tw.log"; got != want {
+		t.Errorf("ResolvedLogPath() with explicit LogFile = %q, want %q", got, want)
+	}
+}
+
+func TestLoad_LogFileEnvOverride(t *testing.T) {
+	t.Setenv("TOKENWARDEN_LOG_FILE", "/env/tw.log")
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LogFile != "/env/tw.log" {
+		t.Errorf("LogFile = %q, want the env override", cfg.LogFile)
+	}
+}

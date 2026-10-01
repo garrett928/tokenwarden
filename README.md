@@ -90,6 +90,8 @@ task run             # builds + runs tokenwardend in the foreground
 
 By default it listens on `127.0.0.1:7842` and stores its database in the OS-appropriate per-user config directory (e.g. `~/Library/Application Support/tokenwarden` on macOS). Override with `TOKENWARDEN_LISTEN_ADDR`, `TOKENWARDEN_DATA_DIR`, or `TOKENWARDEN_DB_PATH` env vars, or a `config.json` in that same directory — see `internal/config` for the full list.
 
+**Logs:** besides stderr, the daemon appends a `key=value` log to `tokenwardend.log` in that same directory (override with `TOKENWARDEN_LOG_FILE` or `log_file` in `config.json`). It is meant to let you judge an unattended run (e.g. overnight) from the file alone: one `scheduler tick` line every 30s (decision + reason, 5h/7d usage and source, candidate count), `dispatch start`/`dispatch end` per job (status, duration, cost, tokens, failure reason), defer/cap/promote events, retry-cooldown holds, refused resumes, kill-switch and scheduler-config changes, ground-truth readings, and a `heartbeat` every 10 minutes with job counts by status. Try `grep -E 'dispatch end|heartbeat' tokenwardend.log`. The file is never rotated or truncated.
+
 ### 3. Drive it from the CLI
 
 With the daemon running (in another terminal):
