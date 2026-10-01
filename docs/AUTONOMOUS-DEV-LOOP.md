@@ -134,7 +134,18 @@ changing this document.
   `gh pr checks` in a sleep loop, and never `CronCreate`/`ScheduleWakeup`
   from inside `/dev-cycle` itself for this; the wrapping `/loop` session's
   own pacing covers it.
-- **Merging is a direct `gh pr merge --squash` once CI is green — not
+- **Default merger: the `automerge` job in `.github/workflows/ci.yml`.** It
+  `needs:` every other CI job, so it only runs once all of them are green,
+  then squash-merges the PR — no session has to stay alive to watch CI.
+  Opt out per PR with the `no-automerge` label (`gh pr create --label
+  no-automerge`, `/dev-cycle --no-automerge`, or add the label any time
+  before CI finishes; the label is re-read live at merge time). It only ever
+  fires for PRs opened by the repo owner from a branch in this same repo —
+  never forks or Dependabot — because the repo is public. It passes
+  `--match-head-commit` so a newer push can't be merged on an older run's
+  green result. The direct merge described next is the fallback when the
+  Action hasn't merged a green PR.
+- **Direct merge (fallback): `gh pr merge --squash` once CI is green — not
   GitHub's own auto-merge feature.** This was tried both ways on real PRs
   and GitHub's `set_auto_merge` genuinely doesn't work on this repo as
   configured: it refuses ("Pull request is in clean status") once every
