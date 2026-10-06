@@ -1,6 +1,8 @@
 # tokenwarden — Requirements
 
-**Status:** Draft v1 · **Last updated:** 2026-08-01
+**Status:** Draft v1, revision 2 · **Last updated:** 2026-10-05
+
+**Revision 2 (2026-10-05)** adds §5.6 (workspace, project context, attachments, output folder), amends FR-JOB-2/3/5, FR-SAFE-2/3, NFR-UI-2 and §10, and adds FR-SAFE-6/7. It is a deliberate, user-approved change to the safety posture — see the note under FR-SAFE-3. Implementation guidance for the next agent: [`WORKSPACE-AND-ATTACHMENTS-PLAN.md`](WORKSPACE-AND-ATTACHMENTS-PLAN.md).
 
 ---
 
@@ -92,7 +94,8 @@ Verified against `claude --help` (v2.1.152):
 | `--max-budget-usd` | Hard per-job spend ceiling; also the mechanism for partial runs (§6.4) |
 | `--permission-mode <plan\|dontAsk\|acceptEdits\|…>` | Per-job-kind autonomy profile |
 | `--resume <id>`, `--session-id <uuid>` | Continuation across windows, follow-up turns |
-| `--worktree`, `--add-dir` | Filesystem isolation for unattended runs |
+| `--worktree`, `--add-dir` | Filesystem isolation for unattended runs; extra readable/writable folders |
+| process working directory (`cmd.Dir`) | Where Claude Code loads project context from: `CLAUDE.md`, `.claude/skills`, commands, subagents, settings (**FR-WS-2**) |
 | `--json-schema` | Structured results for research jobs |
 | `--settings <json>` | Per-run statusline injection (interactive sessions only) |
 | `--agents`, `--mcp-config`, `--plugin-dir` | Future integration surface |
@@ -105,10 +108,10 @@ Verified against `claude --help` (v2.1.152):
 ### 5.1 Queue and jobs
 
 - **FR-JOB-1** — Users can queue prompts and tasks for later execution, with priority ordering.
-- **FR-JOB-2** — A job carries: kind, prompt, workspace directory, model, effort, attachments, priority, optional earliest-start and deadline, optional per-job budget cap, dependencies, and optional user-declared steps.
-- **FR-JOB-3** — Job kinds map to CLI flag profiles: `research`, `plan`, `code`, `review`, `freeform`. The kind determines the autonomy posture (§8.2).
+- **FR-JOB-2** — A job carries: kind, prompt, workspace directory (optional, any kind — §5.6), extra directories, output directory (optional, §5.6), model, effort, attachments, priority, optional earliest-start and deadline, optional per-job budget cap, dependencies, and optional user-declared steps.
+- **FR-JOB-3** — Job kinds map to CLI flag profiles: `research`, `plan`, `code`, `review`, `freeform`. Kinds are presets for permission mode and defaults, not capability ceilings (FR-SAFE-3, revision 2). Every kind can use the workspace's project skills (FR-WS-2).
 - **FR-JOB-4** — Users choose model and thinking effort per job, with a configurable default.
-- **FR-JOB-5** — Users can attach files and screenshots. Attachments are copied into a per-job workspace and referenced by absolute path in the prompt; Claude Code's `Read` tool handles images and PDFs natively.
+- **FR-JOB-5** — Users can attach files and screenshots, including pasted images. Superseded in detail by FR-ATT-1..8 (§5.6): attachments are snapshotted into daemon-owned storage and referenced by absolute path in the prompt; Claude Code's `Read` tool handles images and PDFs natively.
 - **FR-JOB-6** — Jobs may depend on other jobs; a job is not dispatched until its dependencies succeed.
 - **FR-JOB-7** — Jobs support multi-turn continuation via `--resume`, including user-authored follow-ups on a completed job.
 - **FR-JOB-8** — Job states: `queued`, `blocked`, `running`, `paused_budget`, `deferred_oversized`, `succeeded`, `failed`, `cancelled`.
@@ -155,6 +158,45 @@ Verified against `claude --help` (v2.1.152):
 
 - **FR-INT-1** — A `WorkSource` plugin interface (`Poll() []CandidateWork`) allows external systems to supply queueable work. **Stubbed in v1; no provider ships in v1.**
 - **FR-INT-2** — Planned providers, in priority order: GitHub Issues/PRs/Projects, then ClickUp, then Google Drive.
+
+---
+
+### 5.6 Workspace, project context, attachments and output (added revision 2)
+
+Goal: queuing a job should feel like starting a Claude session in a folder — the folder's own `CLAUDE.md` and skills apply, files can be attached the way they can in the Claude desktop app, and generated files can be sent somewhere chosen. Everything in this section applies to **every** job kind.
+
+**Workspace (the folder Claude runs from)**
+
+- **FR-WS-1** — `workspace` is optional on every kind (today `code` requires it). When set, it is the process working directory of the `claude` subprocess.
+- **FR-WS-2** — Project context applies. Because Claude Code is started in the workspace, that folder's `CLAUDE.md` (and parents'), `.claude/skills`, commands, subagents and settings are loaded, along with the user's own user-level equivalents. This must hold for `research`, `plan`, `review`, `code` and `freeform` alike, which requires the `Skill` tool to be allowed in every kind (FR-SAFE-3).
+- **FR-WS-3** — With no workspace, the job runs in a per-job scratch directory (`<data dir>/jobs/<job-id>/work`), never in the daemon's own working directory. (A packaged desktop app's daemon has `/` as its cwd, so "inherit the daemon's cwd" is not an acceptable default.) Attachments always live beside it (`.../attachments`).
+- **FR-WS-4** — The daemon validates a workspace (exists, is a directory, readable) and can describe it: git repo or not, `CLAUDE.md` present, number of project skills, project hooks present, `.mcp.json` present. The UI shows this as chips before queuing (FR-UI-2). An invalid path is rejected at job creation.
+- **FR-WS-5** — The UI's workspace field has a folder-picker icon that opens the **native OS folder dialog** (Finder on macOS) in the desktop shell and fills in the absolute path. Typing or pasting a path always works; in a plain browser (no shell) the typed path is the only option.
+- **FR-WS-6** — A job's workspace is immutable once it has a session id (resume is expected to be cwd-scoped — verify, §10 item 6).
+- **FR-WS-7** — Worktrees: when the workspace is a git repository, every kind defaults to `--worktree` isolation (FR-SAFE-2), with a per-job **run in place** option (`run_in_place`) for when local, untracked files (`CLAUDE.local.md`, `.claude/settings.local.json`, `.env`) or direct edits to the real checkout are wanted. A non-git workspace runs in place; the UI warns that nothing isolates it. The UI states plainly that a worktree contains only tracked files.
+- **FR-WS-8** — Extra folders (`add_dirs`, passed as `--add-dir`) are available on every kind via an "Add folder" control. Because every kind can now write (FR-SAFE-3), the UI marks them as read-write.
+
+**Attachments**
+
+- **FR-ATT-1** — The composer supports attaching files via a button/file picker, drag-and-drop, and **pasting from the clipboard** (pasted images become `screenshot-<timestamp>.png`). Attached items appear as removable chips, with a thumbnail for images.
+- **FR-ATT-2** — Attachments are **snapshotted**: copied into daemon-owned storage (`<data dir>/jobs/<job-id>/attachments/`) at queue time, so a job queued for overnight still has its files if the originals are moved or deleted. Browsers upload via `POST /api/attachments` (staging, returns an id that job creation references).
+- **FR-ATT-3** — The runner appends an "Attached files" block to the prompt listing each file's absolute path and name, so Claude knows they exist; images and PDFs are read with the `Read` tool.
+- **FR-ATT-4** — Defaults (configurable): 25 MB per file, 100 MB and 20 files per job; exceeding them is a clear error, not a silent drop.
+- **FR-ATT-5** — Retention: staged-but-unused uploads are removed after 24 h; a job's attachments are removed with the job and after a configurable period (default 30 days) once it is terminal.
+- **FR-ATT-6** — CLI parity: `tokenwarden queue add --attach <path>` (repeatable); the daemon performs the same snapshot.
+- **FR-ATT-7** — Attachments are stored with owner-only permissions. Logs record names and sizes only, never contents.
+- **FR-ATT-8** — Job detail shows a job's attachments (thumbnails for images).
+
+**Output folder**
+
+- **FR-OUT-1** — `output_dir` is optional on every kind. When set, the runner grants write access to it (`--add-dir`) and tells Claude in the prompt to save generated files there (absolute path) and not to overwrite existing files. The no-overwrite instruction is prompt-level, not enforced.
+- **FR-OUT-2** — When unset, deliverables stay in the workspace (or its worktree); job detail shows where that is.
+- **FR-OUT-3** — Where feasible the job record lists files created in `output_dir` (directory listing before vs. after the run); full artifact browsing/diffing remains FR-ART-1.
+
+**UI**
+
+- **FR-UI-1** — The Create Job composer exposes workspace (with picker), attachments, extra folders, output folder, and run-in-place, in addition to kind/model/effort/priority. CLI and API have the same fields (`--workspace`, `--attach`, `--add-dir`, `--output-dir`, `--run-in-place`).
+- **FR-UI-2** — Before queuing, the UI summarises what will happen: effective permission posture (FR-SAFE-3), worktree vs. in place, what project context was found in the workspace (FR-WS-4), and a warning if the workspace contains hooks or MCP servers (FR-SAFE-6).
 
 ---
 
@@ -219,7 +261,7 @@ When the top-priority job's predicted cost exceeds remaining 5-hour headroom, th
 - **NFR-PERF-3** — `twprobe` must start in <5 ms and never block a Claude turn: read stdin, fire-and-forget over the local socket, print one line, exit. It sits in the latency path of every status line render.
 - **NFR-BUILD-1** — **No cgo.** SQLite via `modernc.org/sqlite`, so `GOOS=windows go build` works from a Mac with no C toolchain. This is what keeps the CD pipeline cheap and is a hard constraint on dependency choice.
 - **NFR-UI-1** — Light and dark themes, following the OS preference by default with an explicit override.
-- **NFR-UI-2** — The UI is a local web app served by the daemon; the desktop window is a thin shell over it. Consequences: the app is usable from a phone or another machine on the LAN (off by default), and the shell is replaceable without touching application code.
+- **NFR-UI-2** — The UI is a local web app served by the daemon; the desktop window is a thin shell over it. Consequences: the app is usable from a phone or another machine on the LAN (off by default), and the shell is replaceable without touching application code. Exception (revision 2): the native folder picker (FR-WS-5) needs a minimal shell-provided bridge; the UI feature-detects it and works without it (typed path).
 - **NFR-MAINT-1** — Clear module boundaries (`scheduler`, `budget`, `runner`, `queue`, `store`, `api`, `integrations`) with dependencies pointing inward. New job kinds and work sources are added by implementing an interface, not by editing the scheduler.
 - **NFR-TEST-1** — Integration tests run against a **fake `claude` binary** that emits scripted `stream-json` (including rate-limit errors and retry events). The real dispatch path is exercised with **zero tokens spent and no network**, which is what makes CI meaningful rather than decorative.
 - **NFR-TEST-2** — Simulated-clock tests assert that a simulated week lands within tolerance of the aggressiveness target across scenarios: empty queue, oversubscribed queue, mid-week reserved block, injected rate-limit errors, and an oversized job capped-and-resumed across three windows.
@@ -234,18 +276,24 @@ When the top-priority job's predicted cost exceeds remaining 5-hour headroom, th
 - **NFR-SEC-1** — No credentials handled, stored, or transmitted (§4.2).
 - **NFR-SEC-2** — The daemon binds to `127.0.0.1` only. LAN exposure is opt-in and requires an explicit token.
 - **FR-SAFE-1** — `--dangerously-skip-permissions` is never used. Not as a default, not as an option.
-- **FR-SAFE-2** — Unattended jobs default to `--worktree` isolation so nothing lands on a working branch overnight, plus a per-job `--max-budget-usd`. Unattended combined with permissive is precisely how an overnight run becomes a bad morning.
-- **FR-SAFE-3** — Autonomy posture is per job kind, and visible in the UI before a job is queued:
+- **FR-SAFE-2** — Unattended jobs default to `--worktree` isolation (when the workspace is a git repo; per-job `run_in_place` opt-out, FR-WS-7) so nothing lands on a working branch overnight, plus a per-job `--max-budget-usd`, enforced across a job's whole lifetime (`UserMaxBudgetUSD`). Unattended combined with permissive is precisely how an overnight run becomes a bad morning.
+- **FR-SAFE-3** — Autonomy posture is per job kind, and visible in the UI before a job is queued (FR-UI-2). **Revision 2 (2026-10-05):** every kind may use project skills, and the user chose to give every kind the full tool set rather than keep research/plan/review read-only. Kinds are now presets for permission mode:
 
-  | Kind | Permission mode | Filesystem |
-  |---|---|---|
-  | `research` | `dontAsk`, read-only tools | none |
-  | `plan` | `plan` (proposes, never edits) | none |
-  | `code` | `acceptEdits` + explicit `--allowedTools` | `--worktree` |
-  | `review` | read-only | none |
-  | `freeform` | user-specified | user-specified |
+  | Kind | Permission mode | Tools | Filesystem |
+  |---|---|---|---|
+  | `research` | `dontAsk` | full set + `Skill` | `--worktree` by default (FR-WS-7) |
+  | `plan` | `plan` (Claude Code's own propose-don't-edit mode) | full set + `Skill`; the mode itself blocks edits | none needed |
+  | `code` | `acceptEdits` | full set + `Skill` | `--worktree` by default |
+  | `review` | `dontAsk` | full set + `Skill` | `--worktree` by default |
+  | `freeform` | user-specified | user-specified (`Skill` must be included unless the user lists tools explicitly) | user-specified |
+
+  "Full set" = `Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`, `WebFetch`, `WebSearch`, `NotebookRead`/`NotebookEdit`, `Skill` — exact tool names and `--allowedTools` syntax to be confirmed against the real CLI (§10 item 5). The `plan` row is an **assumption** made when writing this revision (the user said "all modes"; `plan` keeping its read-only mode seemed the sensible reading) — confirm with the user before implementing.
+
+  This supersedes the earlier rule that a fixed kind's posture could not be widened. The invariants that remain non-negotiable: FR-SAFE-1 (no `bypassPermissions`, anywhere), FR-SAFE-2 (worktree default + lifetime budget cap), FR-SAFE-4 (kill switch), FR-SAFE-5, and the audit trail in FR-SAFE-7. Unattended + `Bash` is powerful; the mitigations are those four things, not a tool restriction.
 
 - **FR-SAFE-4** — A global kill switch stops all dispatch immediately and terminates running subprocesses.
+- **FR-SAFE-6** — Project hooks and MCP servers in the workspace (`.claude/settings*.json` hooks, `.mcp.json`) are allowed to run, as they would in a normal session. Dispatch detects and **logs** them (a `workspace_context` line: CLAUDE.md, skill count, hooks, MCP) and the UI **warns** before queuing (FR-UI-2). Not blocked, not opt-in — the user chose visibility over restriction.
+- **FR-SAFE-7** — Audit trail: the job log records each tool invocation (tool name; for `Bash`, the command truncated to 200 chars) from the `stream-json` events, so an overnight run's actions can be reviewed from the log alone.
 - **FR-SAFE-5** — tokenwarden schedules only work the user has queued or explicitly approved from a work source. It never invents work (§1.1).
 
 ---
@@ -269,6 +317,14 @@ When the top-priority job's predicted cost exceeds remaining 5-hour headroom, th
 2. **Concurrency.** Do parallel `claude -p` runs give better window utilisation, or do they mainly cause overshoot past the ceiling? Measure before enabling.
 3. ~~**Cost estimation cold start.**~~ **Resolved:** no prior. Until `internal/budget.CalibrateFiveHour`/`CalibrateSevenDay` report `Insufficient: false` (≥3 samples), the engine dispatches one job at a time and relies solely on the hard ceiling check (§6.2 step 3) rather than a predicted-cost fit.
 4. **Weekly model-specific caps.** Max plans reportedly carry a second weekly limit scoped to certain models. `rate_limits` exposes only `five_hour` and `seven_day`, so a model-specific cap may be invisible to the engine and only discoverable via an error. Needs investigation.
+5. **Skill tool names and allowlist syntax.** Confirm in the real CLI, in `-p` mode, what the skill tool is called, how it appears in `--allowedTools`, and that project skills load from the workspace (SPIKE-002).
+6. **Resume vs. cwd.** Is `--resume` scoped to the cwd/worktree it was created in? Determines FR-WS-6 and how worktree-per-run interacts with resumable jobs.
+7. **Cost prediction with project context.** `CLAUDE.md` and skills inflate every run's context. `PredictJobCost` is a per-kind mean; should it key on (kind, workspace)?
+8. **Concurrency per workspace.** When §10 item 2 lands, two in-place jobs in one workspace must not run simultaneously.
+9. **Worktree clutter.** Defaulting every kind to `--worktree` creates a worktree per run (the overnight test already produced 100+). Verify Claude Code removes unchanged ones; otherwise add cleanup.
+10. **macOS folder permissions (TCC).** First access to Documents/Desktop/OneDrive folders prompts; confirm the prompt is attributed to the app when the daemon is its child, and that a daemon started from a terminal behaves.
+11. **Shell bridge vs. NFR-UI-2.** How the web UI asks the desktop shell for a native folder dialog (Wails dialog API) without making the shell load-bearing.
+12. **Folder "attachments".** Dropping a folder means "add as extra directory", not "copy it" (FR-WS-8); decide whether to also offer a copy-snapshot for huge or volatile folders.
 
 ---
 

@@ -152,6 +152,7 @@ Closing the window hides it rather than quitting (the scheduler needs to keep di
 |---|---|
 | [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | Full requirements, verified research findings, pacing engine design |
 | [`docs/SPIKE-001-usage-telemetry.md`](docs/SPIKE-001-usage-telemetry.md) | The experiments that settled the architecture |
+| [`docs/WORKSPACE-AND-ATTACHMENTS-PLAN.md`](docs/WORKSPACE-AND-ATTACHMENTS-PLAN.md) | Planned: project skills in every mode, attachments, output folder, folder picker (requirements rev 2) |
 
 ## A note on acceptable use
 
